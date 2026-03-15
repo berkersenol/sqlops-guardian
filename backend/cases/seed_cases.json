@@ -1,0 +1,107 @@
+[
+  {
+    "case_id": "sarg-extract-date",
+    "query": "SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;",
+    "problems": ["FUNCTION_ON_COLUMN", "SELECT_STAR"],
+    "fix": "Replaced EXTRACT with range comparison: WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'. Listed specific columns instead of SELECT *.",
+    "tables": ["orders"]
+  },
+  {
+    "case_id": "sarg-lower-email",
+    "query": "SELECT id, name FROM customers WHERE LOWER(email) = 'john@example.com';",
+    "problems": ["FUNCTION_ON_COLUMN"],
+    "fix": "Added a generated column or functional index on LOWER(email). Alternatively, normalized email to lowercase on insert so the function is unnecessary at query time.",
+    "tables": ["customers"]
+  },
+  {
+    "case_id": "sarg-upper-name",
+    "query": "SELECT * FROM employees WHERE UPPER(last_name) = 'SMITH';",
+    "problems": ["FUNCTION_ON_COLUMN", "SELECT_STAR"],
+    "fix": "Used a case-insensitive collation or citext column type. Replaced SELECT * with specific columns needed.",
+    "tables": ["employees"]
+  },
+  {
+    "case_id": "select-star-join",
+    "query": "SELECT * FROM customers c JOIN orders o ON c.id = o.customer_id JOIN order_items oi ON o.id = oi.order_id;",
+    "problems": ["SELECT_STAR"],
+    "fix": "Listed only needed columns: c.name, o.order_date, oi.product_name, oi.quantity. Reduced network transfer and allowed covering index usage.",
+    "tables": ["customers", "orders", "order_items"]
+  },
+  {
+    "case_id": "delete-no-where",
+    "query": "DELETE FROM session_logs;",
+    "problems": ["DELETE_WITHOUT_WHERE"],
+    "fix": "Added WHERE clause with date filter: DELETE FROM session_logs WHERE created_at < NOW() - INTERVAL '90 days'. For full table wipes, use TRUNCATE instead.",
+    "tables": ["session_logs"]
+  },
+  {
+    "case_id": "update-no-where",
+    "query": "UPDATE products SET is_active = false;",
+    "problems": ["UPDATE_WITHOUT_WHERE"],
+    "fix": "Added WHERE clause to target specific rows: UPDATE products SET is_active = false WHERE last_sold_at < NOW() - INTERVAL '1 year'.",
+    "tables": ["products"]
+  },
+  {
+    "case_id": "leading-wildcard-search",
+    "query": "SELECT id, name FROM customers WHERE name LIKE '%enterprise%';",
+    "problems": ["LEADING_WILDCARD_LIKE"],
+    "fix": "Implemented full-text search using tsvector/tsquery (PostgreSQL) or FULLTEXT index (MySQL). For simple prefix matches, reversed to 'enterprise%' where possible.",
+    "tables": ["customers"]
+  },
+  {
+    "case_id": "leading-wildcard-email-domain",
+    "query": "SELECT * FROM users WHERE email LIKE '%@gmail.com';",
+    "problems": ["LEADING_WILDCARD_LIKE", "SELECT_STAR"],
+    "fix": "Added a separate email_domain column populated on insert. Query becomes WHERE email_domain = 'gmail.com' with an index on email_domain.",
+    "tables": ["users"]
+  },
+  {
+    "case_id": "missing-fk-index",
+    "query": "SELECT o.id, o.total FROM orders o JOIN customers c ON o.customer_id = c.id WHERE c.country = 'US' ORDER BY o.created_at DESC;",
+    "problems": ["MISSING_LIMIT"],
+    "fix": "Added LIMIT 100 to prevent unbounded result sets. Verified index exists on orders.customer_id (foreign key) and customers.country.",
+    "tables": ["orders", "customers"]
+  },
+  {
+    "case_id": "left-join-where-trap",
+    "query": "SELECT c.name, o.total FROM customers c LEFT JOIN orders o ON c.id = o.customer_id WHERE o.status = 'completed';",
+    "problems": ["LEFT_JOIN_WHERE_TRAP"],
+    "fix": "Moved the filter into the ON clause: LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'completed'. This preserves non-matching customer rows.",
+    "tables": ["customers", "orders"]
+  },
+  {
+    "case_id": "left-join-where-trap-date",
+    "query": "SELECT e.name, d.dept_name FROM employees e LEFT JOIN departments d ON e.dept_id = d.id WHERE d.active = true;",
+    "problems": ["LEFT_JOIN_WHERE_TRAP"],
+    "fix": "Changed to INNER JOIN since filtering on the right table negates the LEFT. If LEFT JOIN behavior is needed, moved filter to ON clause.",
+    "tables": ["employees", "departments"]
+  },
+  {
+    "case_id": "order-by-no-limit",
+    "query": "SELECT id, name, revenue FROM companies ORDER BY revenue DESC;",
+    "problems": ["MISSING_LIMIT"],
+    "fix": "Added LIMIT 50 to return only top results. For pagination, added LIMIT with OFFSET or keyset pagination.",
+    "tables": ["companies"]
+  },
+  {
+    "case_id": "not-in-null-trap",
+    "query": "SELECT id FROM customers WHERE id NOT IN (SELECT customer_id FROM orders WHERE customer_id IS NOT NULL);",
+    "problems": ["NOT_IN_SUBQUERY"],
+    "fix": "Replaced NOT IN with NOT EXISTS: WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.customer_id = customers.id). Handles NULLs correctly and often faster.",
+    "tables": ["customers", "orders"]
+  },
+  {
+    "case_id": "or-across-columns",
+    "query": "SELECT * FROM products WHERE category = 'Electronics' OR brand = 'Apple';",
+    "problems": ["OR_ACROSS_COLUMNS", "SELECT_STAR"],
+    "fix": "Split into two queries with UNION ALL for better index usage: SELECT id FROM products WHERE category = 'Electronics' UNION ALL SELECT id FROM products WHERE brand = 'Apple'.",
+    "tables": ["products"]
+  },
+  {
+    "case_id": "correlated-subquery-scale",
+    "query": "SELECT e.name, (SELECT AVG(s.amount) FROM sales s WHERE s.employee_id = e.id) as avg_sale FROM employees e ORDER BY avg_sale DESC;",
+    "problems": ["MISSING_LIMIT"],
+    "fix": "Replaced correlated subquery with JOIN: SELECT e.name, AVG(s.amount) FROM employees e JOIN sales s ON e.id = s.employee_id GROUP BY e.name ORDER BY avg_sale DESC LIMIT 20. Executes once instead of per-row.",
+    "tables": ["employees", "sales"]
+  }
+]
