@@ -8,6 +8,10 @@ Usage:
 
 import sys
 import os
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from .linter import lint_sql
 from .models import AnalysisReport, Severity
 
@@ -174,6 +178,7 @@ def run_tests():
                       LEFT JOIN orders o ON c.id = o.customer_id
                       LEFT JOIN order_items oi ON o.id = oi.order_id
                       WHERE LOWER(c.name) LIKE '%enterprise%'
+                      AND o.status = 'completed'
                       ORDER BY o.created_at DESC;""",
             "expected_rules": ["SELECT_STAR", "FUNCTION_ON_COLUMN",
                              "LEADING_WILDCARD_LIKE", "MISSING_LIMIT",
@@ -200,7 +205,8 @@ def run_tests():
             passed += 1
         else:
             print(f"  {RED}✗{RESET} {test['name']}")
-            print(f"    Expected: {test.get('expected_rules', f'count={test.get(\"expected_count\")}')}")
+            expected = test.get("expected_rules", f"count={test.get('expected_count')}")
+            print(f"    Expected: {expected}")
             print(f"    Found:    {found_rules}")
             failed += 1
 
