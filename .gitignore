@@ -35,3 +35,9 @@ frontend/.vite/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude AI
+.claude/
+
+# Project prompt
+sqlops-guardian-full-prompt.md
