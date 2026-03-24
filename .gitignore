@@ -38,6 +38,7 @@ Thumbs.db
 
 # Claude AI
 .claude/
+CLAUDE.md
 
 # Project prompt
 sqlops-guardian-full-prompt.md
