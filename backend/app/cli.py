@@ -8,9 +8,10 @@ Usage:
 
 import sys
 import os
+import io
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from .linter import lint_sql
 from .models import AnalysisReport, Severity
