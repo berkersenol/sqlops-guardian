@@ -79,6 +79,7 @@ def log_analysis(report: AnalysisReport, response_time_ms: int = 0, tokens_used:
     )
     conn.commit()
     row_id = cursor.lastrowid
+    assert row_id is not None
     conn.close()
     return row_id
 
@@ -132,7 +133,7 @@ def get_metrics() -> dict:
         for finding in json.loads(row["lint_findings"]):
             rule = finding["rule_name"]
             rule_counts[rule] = rule_counts.get(rule, 0) + 1
-    most_common_rule = max(rule_counts, key=rule_counts.get) if rule_counts else None
+    most_common_rule = max(rule_counts, key=rule_counts.__getitem__) if rule_counts else None
 
     # Feedback acceptance rate
     feedback_rows = conn.execute(
