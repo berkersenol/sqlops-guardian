@@ -4,10 +4,15 @@ WORKDIR /app
 
 RUN pip install uv
 
+# Copy dependency files first (layer caching)
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev
 
+# Copy source code
 COPY backend/ ./
+
+# Create data directory for SQLite + ChromaDB persistence
+RUN mkdir -p /app/data
 
 EXPOSE 8000
 
