@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
 
 from .config import config
 from .models import LintFinding
@@ -89,14 +89,14 @@ def analyze_with_llm(
         return None
 
     try:
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        model = genai.GenerativeModel(config.LLM_MODEL)
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
         prompt = _build_prompt(query, lint_findings, similar_cases)
 
         start = time.time()
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
+        response = client.models.generate_content(
+            model=config.LLM_MODEL,
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(
                 max_output_tokens=config.LLM_MAX_TOKENS,
                 temperature=0.2,
             ),
@@ -108,7 +108,7 @@ def analyze_with_llm(
         if hasattr(response, "usage_metadata") and response.usage_metadata:
             tokens_used = getattr(response.usage_metadata, "total_token_count", 0)
 
-        raw_text = response.text.strip()
+        raw_text = (response.text or "").strip()
 
         # Try to parse as JSON
         result = _parse_response(raw_text)
