@@ -5,9 +5,9 @@ load_dotenv()
 
 
 class Config:
-    # Gemini / LLM
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+    # Groq / LLM
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1000"))
 
     # ChromaDB / RAG

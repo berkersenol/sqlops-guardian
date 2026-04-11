@@ -1,6 +1,6 @@
 """
 SQLOps Guardian - LLM Analyzer
-Sends SQL queries + lint findings + RAG cases to Gemini for deeper analysis.
+Sends SQL queries + lint findings + RAG cases to Groq for deeper analysis.
 """
 
 import json
@@ -8,12 +8,21 @@ import logging
 import time
 from typing import Optional
 
-from google import genai
+from groq import Groq
 
 from .config import config
 from .models import LintFinding
 
 logger = logging.getLogger(__name__)
+
+_client: Optional[Groq] = None
+
+
+def _get_client() -> Groq:
+    global _client
+    if _client is None:
+        _client = Groq(api_key=config.GROQ_API_KEY)
+    return _client
 
 
 def _build_prompt(query: str, lint_findings: list[LintFinding], similar_cases: list[dict]) -> str:
@@ -84,31 +93,26 @@ def analyze_with_llm(
     """
 
     # Graceful degradation: no key = no LLM
-    if not config.GEMINI_API_KEY or not config.GEMINI_API_KEY.strip():
-        logger.info("No GEMINI_API_KEY configured, skipping LLM analysis.")
+    if not config.GROQ_API_KEY or not config.GROQ_API_KEY.strip():
+        logger.info("No GROQ_API_KEY configured, skipping LLM analysis.")
         return None
 
     try:
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
         prompt = _build_prompt(query, lint_findings, similar_cases)
 
         start = time.time()
-        response = client.models.generate_content(
+        response = _get_client().chat.completions.create(
             model=config.LLM_MODEL,
-            contents=prompt,
-            config=genai.types.GenerateContentConfig(
-                max_output_tokens=config.LLM_MAX_TOKENS,
-                temperature=0.2,
-            ),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=config.LLM_MAX_TOKENS,
         )
         elapsed_ms = int((time.time() - start) * 1000)
 
         # Extract token usage
-        tokens_used = 0
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            tokens_used = getattr(response.usage_metadata, "total_token_count", 0)
+        tokens_used = response.usage.total_tokens if response.usage else 0
 
-        raw_text = (response.text or "").strip()
+        raw_text = (response.choices[0].message.content or "").strip()
 
         # Try to parse as JSON
         result = _parse_response(raw_text)
