@@ -26,7 +26,7 @@ def _get_client() -> Groq:
 
 
 def _build_prompt(query: str, lint_findings: list[LintFinding], similar_cases: list[dict]) -> str:
-    """Build the structured prompt for Gemini."""
+    """Build the structured prompt for Groq."""
 
     # Format lint findings
     if lint_findings:
@@ -87,7 +87,7 @@ def analyze_with_llm(
     similar_cases: list[dict],
 ) -> Optional[dict]:
     """
-    Send query + context to Gemini for deep analysis.
+    Send query + context to Groq for deep analysis.
     Returns dict with analysis results, or None on failure.
     Also returns tokens_used and response_time_ms via the dict.
     """
