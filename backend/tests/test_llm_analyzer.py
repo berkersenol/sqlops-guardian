@@ -1,5 +1,5 @@
 """
-Tests for llm_analyzer.py — Gemini LLM integration.
+Tests for llm_analyzer.py — Groq LLM integration.
 Run: uv run python -m pytest tests/test_llm_analyzer.py
 """
 
@@ -77,32 +77,35 @@ def run_tests():
     # --- Integration tests (require API key) ---
 
     # Test 6: returns None when API key is empty
-    original_key = os.environ.get("GEMINI_API_KEY", "")
-    os.environ["GEMINI_API_KEY"] = ""
+    original_key = os.environ.get("GROQ_API_KEY", "")
+    os.environ["GROQ_API_KEY"] = ""
     # Reload config to pick up empty key
     from app.config import Config
     from app import config as config_mod
-    saved_key = config_mod.config.GEMINI_API_KEY
-    config_mod.config.GEMINI_API_KEY = ""
+    saved_key = config_mod.config.GROQ_API_KEY
+    config_mod.config.GROQ_API_KEY = ""
 
     result = analyze_with_llm(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
     check("returns None when API key empty", result is None)
 
     # Restore key
-    config_mod.config.GEMINI_API_KEY = saved_key
-    os.environ["GEMINI_API_KEY"] = original_key
+    config_mod.config.GROQ_API_KEY = saved_key
+    os.environ["GROQ_API_KEY"] = original_key
 
     # Test 7: returns None on bad API key (simulates API error)
-    config_mod.config.GEMINI_API_KEY = "invalid-key-12345"
+    config_mod.config.GROQ_API_KEY = "invalid-key-12345"
     result = analyze_with_llm(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
     check("returns None on API error (bad key)", result is None)
 
     # Restore
-    config_mod.config.GEMINI_API_KEY = saved_key
+    config_mod.config.GROQ_API_KEY = saved_key
+    # Reset the cached client so it picks up the restored key
+    import app.llm_analyzer as llm_mod
+    llm_mod._client = None
 
     # Test 8: live API call (only if real key is available)
     if saved_key and saved_key.strip() and saved_key != "invalid-key-12345":
-        print(f"\n  {BOLD}Live API test (calling Gemini)...{RESET}")
+        print(f"\n  {BOLD}Live API test (calling Groq)...{RESET}")
         result = analyze_with_llm(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
         check("live call returns a dict", isinstance(result, dict))
         if result:
@@ -120,7 +123,7 @@ def run_tests():
             print(f"    Time: {result.get('response_time_ms')}ms")
             print(f"    Explanation: {result.get('explanation', '')[:200]}...")
     else:
-        print(f"\n  {BOLD}Skipping live API test (no GEMINI_API_KEY){RESET}")
+        print(f"\n  {BOLD}Skipping live API test (no GROQ_API_KEY){RESET}")
 
     print(f"\n{'-'*40}")
     print(f"  {GREEN}Passed: {passed}{RESET}  {RED}Failed: {failed}{RESET}")

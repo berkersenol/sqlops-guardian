@@ -66,13 +66,13 @@ def run_tests():
     check("clean query summary says clean", "clean" in clean.summary.lower() or "no anti" in clean.summary.lower())
 
     # --- Test 4: Pipeline works with LLM unavailable (graceful degradation) ---
-    saved_key = config_mod.config.GEMINI_API_KEY
-    config_mod.config.GEMINI_API_KEY = ""
+    saved_key = config_mod.config.GROQ_API_KEY
+    config_mod.config.GROQ_API_KEY = ""
     report_no_llm = pipeline.analyze("DELETE FROM users;")
     check("works without LLM (no API key)", report_no_llm is not None)
     check("still detects DELETE_WITHOUT_WHERE", any(f.rule_name == "DELETE_WITHOUT_WHERE" for f in report_no_llm.lint_findings))
     check("llm_analysis is None without key", report_no_llm.llm_analysis is None)
-    config_mod.config.GEMINI_API_KEY = saved_key
+    config_mod.config.GROQ_API_KEY = saved_key
 
     # --- Test 5: Results logged to SQLite ---
     from app.case_store import get_recent_analyses
