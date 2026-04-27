@@ -19,7 +19,7 @@ def _get_connection() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create the data directory and analyses table if they don't exist."""
+    """Create the data directory and tables if they don't exist."""
     import os
     os.makedirs(os.path.dirname(os.path.abspath(config.SQLITE_DB_PATH)), exist_ok=True)
     conn = _get_connection()
@@ -38,6 +38,7 @@ def init_db():
             response_time_ms INTEGER NOT NULL DEFAULT 0
         )
     """)
+
     conn.commit()
     conn.close()
 

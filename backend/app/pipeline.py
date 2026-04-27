@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def init():
     """Initialize all backing stores. Call once at startup."""
     from .case_store import init_db
-    from .rag import init_collection
+    from .rag import init_collection, get_case_count
 
     init_db()
     logger.info("SQLite database initialized.")
@@ -24,13 +24,20 @@ def init():
     init_collection()
     logger.info("ChromaDB collection initialized.")
 
+    if get_case_count() == 0:
+        from .seed_cases import seed
+        count = seed()
+        logger.info(f"ChromaDB was empty — auto-seeded {count} cases.")
+    else:
+        logger.info(f"ChromaDB already has {get_case_count()} cases — skipping seed.")
+
 
 def analyze(sql: str) -> AnalysisReport:
     """
     Run the full analysis pipeline:
     1. Deterministic linter (always runs)
     2. RAG search for similar cases (graceful degradation)
-    3. LLM analysis via Gemini (graceful degradation)
+    3. LLM analysis via Groq (graceful degradation)
     4. Log to SQLite
     """
     start = time.time()
