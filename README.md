@@ -46,7 +46,7 @@ If the LLM is unavailable (rate limits, network issues, API key missing), the sy
                     │  └────────────┬──────────────┘  │
                     │               │                 │
                     │  ┌────────────▼──────────────┐  │
-                    │  │    LLM Analyzer (Gemini)  │  │
+                    │  │    LLM Analyzer (Groq)  │  │
                     │  └────────────┬──────────────┘  │
                     │               │                 │
                     │  ┌────────────▼──────────────┐  │
@@ -87,7 +87,7 @@ cd sqlops-guardian
 
 # Set up environment
 cp .env.example .env
-# Edit .env → add your GEMINI_API_KEY
+# Edit .env → add your GROQ
 
 # Build and run
 docker-compose up --build
