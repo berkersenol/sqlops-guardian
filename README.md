@@ -17,7 +17,7 @@ SQLOps Guardian analyzes SQL queries through a 4-layer pipeline and returns acti
 
 1. **Deterministic Linter** — 10 regex-based rules catch common anti-patterns instantly
 2. **RAG (Retrieval-Augmented Generation)** — searches a ChromaDB vector store for similar past cases and known fixes
-3. **LLM Analysis** — sends the query to Google Gemini for deeper optimization insights, suggested indexes, and rewritten queries
+3. **LLM Analysis** — sends the query to Groq for deeper optimization insights, suggested indexes, and rewritten queries
 4. **Operations** — logs every analysis to SQLite, tracks metrics, and accepts user feedback to improve RAG over time
 
 If the LLM is unavailable (rate limits, network issues, API key missing), the system gracefully degrades — linter and RAG results are always returned.
@@ -161,7 +161,7 @@ curl -X POST http://localhost:8000/analyze \
 
 ## Tech Stack
 
-**Backend:** Python 3.12 · FastAPI · Pydantic · ChromaDB · Google Gemini API · SQLite · uv
+**Backend:** Python 3.12 · FastAPI · Pydantic · ChromaDB · Groq API · SQLite · uv
 
 **Frontend:** React 18 · Vite · Tailwind CSS · Recharts · react-markdown
 
@@ -179,7 +179,7 @@ sqlops-guardian/
 │   │   ├── config.py           # Environment config via .env
 │   │   ├── linter.py           # 10 deterministic SQL rules
 │   │   ├── rag.py              # ChromaDB vector search
-│   │   ├── llm_analyzer.py     # Gemini integration
+│   │   ├── llm_analyzer.py     # Groq integration
 │   │   ├── pipeline.py         # Orchestrator: Linter → RAG → LLM → Log
 │   │   ├── case_store.py       # SQLite operations layer
 │   │   ├── models.py           # Pydantic models
@@ -210,17 +210,17 @@ All configuration is managed through environment variables (`.env` file):
 
 ```env
 # Required
-GEMINI_API_KEY=your-gemini-api-key
+GROQ_API_KEY=your-groq-api-key
 
 # Optional (defaults shown)
-LLM_MODEL=gemini-2.5-flash
+LLM_MODEL=llama-3.3-70b-versatile
 LLM_MAX_TOKENS=4096
 CHROMA_PERSIST_DIR=./data/chroma_db
 SQLITE_DB_PATH=./data/sqlops_guardian.db
 LOG_LEVEL=INFO
 ```
 
-Get a free Gemini API key at [Google AI Studio](https://aistudio.google.com/apikey).
+Get a free Groq API key at [Groq](https://console.groq.com/keys).
 
 ---
 
