@@ -54,7 +54,7 @@ export default function Analyzer() {
       </div>
 
       {error && (
-        <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 text-sm text-red-300">
+        <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 text-base text-red-300">
           {error}
         </div>
       )}
@@ -65,22 +65,22 @@ export default function Analyzer() {
           {/* Summary bar */}
           <div className="flex flex-wrap items-center gap-3 bg-gray-800 rounded-lg px-5 py-3 border border-gray-700">
             <SeverityBadge severity={report.overall_severity} />
-            <span className="text-sm text-gray-300">{report.summary}</span>
+            <span className="text-base text-gray-300">{report.summary}</span>
             {report.response_time_ms != null && (
-              <span className="ml-auto text-xs text-gray-600">{report.response_time_ms} ms</span>
+              <span className="ml-auto text-sm text-gray-600">{report.response_time_ms} ms</span>
             )}
           </div>
 
           {/* Two-column: Findings + Similar Cases */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div>
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+              <h2 className="text-base font-semibold text-gray-400 uppercase tracking-wide mb-3">
                 Lint Findings ({report.lint_findings.length})
               </h2>
               <FindingsPanel findings={report.lint_findings} />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+              <h2 className="text-base font-semibold text-gray-400 uppercase tracking-wide mb-3">
                 Similar Cases
               </h2>
               <SimilarCases cases={report.similar_cases} />
@@ -89,7 +89,7 @@ export default function Analyzer() {
 
           {/* LLM Analysis */}
           <div>
-            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+            <h2 className="text-base font-semibold text-gray-400 uppercase tracking-wide mb-3">
               LLM Deep Analysis
             </h2>
             <LlmAnalysis analysis={report.llm_analysis} />
@@ -98,7 +98,7 @@ export default function Analyzer() {
           {/* Feedback */}
           {analysisId && !feedbackSent && (
             <div className="bg-gray-800 rounded-lg px-5 py-4 border border-gray-700">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+              <h2 className="text-base font-semibold text-gray-400 uppercase tracking-wide mb-3">
                 Feedback
               </h2>
               <FeedbackButtons
