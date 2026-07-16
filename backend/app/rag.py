@@ -3,11 +3,14 @@ SQLOps Guardian - RAG Layer
 ChromaDB vector search for similar SQL anti-pattern cases.
 """
 
+from collections.abc import Mapping
+
 import chromadb
+from chromadb.api import ClientAPI
 from .config import config
 
 
-_client: chromadb.ClientAPI | None = None
+_client: ClientAPI | None = None
 _collection: chromadb.Collection | None = None
 
 
@@ -27,6 +30,18 @@ def _get_collection() -> chromadb.Collection:
     if _collection is None:
         return init_collection()
     return _collection
+
+
+def _meta_str(meta: Mapping[str, object], key: str) -> str:
+    """Read a metadata value as a string. Chroma metadata values are not str-only."""
+    value = meta.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _meta_list(meta: Mapping[str, object], key: str) -> list[str]:
+    """Read a comma-joined metadata value back into a list."""
+    value = _meta_str(meta, key)
+    return value.split(",") if value else []
 
 
 def _build_case_text(query: str, problems: list[str], fix: str, tables: list[str]) -> str:
@@ -81,25 +96,31 @@ def search_similar(
     if problems:
         search_text += f" Problems: {', '.join(problems)}"
 
+    count = col.count()
     results = col.query(
         query_texts=[search_text],
-        n_results=min(n, col.count()) if col.count() > 0 else 1,
+        n_results=min(n, count) if count > 0 else 1,
     )
 
     if not results["ids"] or not results["ids"][0]:
         return []
 
+    # Chroma types these as Optional and only fills the fields named in `include`.
+    metadatas = results["metadatas"][0] if results["metadatas"] else []
+    documents = results["documents"][0] if results["documents"] else []
+    distances = results["distances"][0] if results["distances"] else []
+
     cases = []
     for i, case_id in enumerate(results["ids"][0]):
-        meta = results["metadatas"][0][i]
-        distance = results["distances"][0][i] if results["distances"] else None
+        meta = metadatas[i] if i < len(metadatas) else {}
+        distance = distances[i] if i < len(distances) else None
         cases.append({
             "case_id": case_id,
-            "document": results["documents"][0][i],
-            "query": meta.get("query", ""),
-            "fix": meta.get("fix", ""),
-            "tables": meta.get("tables", "").split(","),
-            "problems": meta.get("problems", "").split(","),
+            "document": documents[i] if i < len(documents) else "",
+            "query": _meta_str(meta, "query"),
+            "fix": _meta_str(meta, "fix"),
+            "tables": _meta_list(meta, "tables"),
+            "problems": _meta_list(meta, "problems"),
             "distance": distance,
             "similarity": round(1 - distance, 4) if distance is not None else None,
         })

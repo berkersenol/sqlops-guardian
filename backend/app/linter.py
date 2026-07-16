@@ -41,9 +41,9 @@ def check_delete_without_where(sql: str) -> LintFinding | None:
     """
     # Match DELETE FROM table but no WHERE follows
     pattern = r'\bDELETE\s+FROM\s+\w+'
-    if re.search(pattern, sql, re.IGNORECASE):
+    delete_match = re.search(pattern, sql, re.IGNORECASE)
+    if delete_match:
         # Check if WHERE exists anywhere after DELETE
-        delete_match = re.search(pattern, sql, re.IGNORECASE)
         remaining_sql = sql[delete_match.end():]
         if not re.search(r'\bWHERE\b', remaining_sql, re.IGNORECASE):
             return LintFinding(
@@ -63,8 +63,8 @@ def check_update_without_where(sql: str) -> LintFinding | None:
     - Usually a mistake
     """
     pattern = r'\bUPDATE\s+\w+\s+SET\b'
-    if re.search(pattern, sql, re.IGNORECASE):
-        update_match = re.search(pattern, sql, re.IGNORECASE)
+    update_match = re.search(pattern, sql, re.IGNORECASE)
+    if update_match:
         remaining_sql = sql[update_match.end():]
         if not re.search(r'\bWHERE\b', remaining_sql, re.IGNORECASE):
             return LintFinding(
