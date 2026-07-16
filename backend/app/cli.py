@@ -79,7 +79,7 @@ def print_report(report: AnalysisReport):
     # LLM analysis
     if report.llm_analysis:
         llm = report.llm_analysis
-        print(f"{BOLD}LLM Analysis (Gemini):{RESET}\n")
+        print(f"{BOLD}LLM Analysis (Groq):{RESET}\n")
         print(f"  Risk Level:  {llm.get('risk_level', 'N/A')}")
         print(f"  Confidence:  {llm.get('confidence', 'N/A')}")
         print(f"  Improvement: {llm.get('estimated_improvement', 'N/A')}")
