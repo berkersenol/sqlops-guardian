@@ -33,11 +33,11 @@ If the LLM is unavailable (rate limits, network issues, API key missing), the sy
                     └──────────────┬──────────────────┘
                                    │ nginx reverse proxy
                     ┌──────────────▼──────────────────┐
-                    │        FastAPI Backend           │
-                    │                                  │
+                    │        FastAPI Backend          │
+                    │                                 │
                     │  ┌──────────┐  ┌─────────────┐  │
-                    │  │  Linter  │  │  RAG Engine  │  │
-                    │  │ (10 rules│  │  (ChromaDB)  │  │
+                    │  │  Linter  │  │  RAG Engine │  │
+                    │  │ (10 rules│  │  (ChromaDB) │  │
                     │  └────┬─────┘  └──────┬──────┘  │
                     │       │               │         │
                     │  ┌────▼───────────────▼──────┐  │
@@ -46,20 +46,20 @@ If the LLM is unavailable (rate limits, network issues, API key missing), the sy
                     │  └────────────┬──────────────┘  │
                     │               │                 │
                     │  ┌────────────▼──────────────┐  │
-                    │  │    LLM Analyzer (Groq)  │  │
+                    │  │    LLM Analyzer (Groq)    │  │
                     │  └────────────┬──────────────┘  │
                     │               │                 │
                     │  ┌────────────▼──────────────┐  │
                     │  │  Case Store (SQLite)      │  │
                     │  │  Logging, Metrics,        │  │
                     │  │  Feedback                 │  │
-                    │  └──────────────────────────┘  │
-                    └────────────────────────────────┘
+                    │  └────────────────────────── ┘  │
+                    └────────────────── ──────────────┘
                                    │
                     ┌──────────────▼──────────────────┐
                     │     Docker Volume               │
-                    │  ├── sqlops_guardian.db          │
-                    │  └── chroma_db/                  │
+                    │  ├── sqlops_guardian.db         │
+                    │  └── chroma_db/                 │
                     └─────────────────────────────────┘
 ```
 
@@ -117,8 +117,8 @@ npm run dev
 
 ## API Reference
 
-| Method | Endpoint    | Description                                      |
-|--------|-------------|--------------------------------------------------|
+| Method | Endpoint    | Description                                       |
+|--------|-------------|------------------------------------------------- -|
 | POST   | `/analyze`  | Submit a SQL query → returns full analysis report |
 | POST   | `/feedback` | Submit accept/reject feedback on an analysis      |
 | GET    | `/metrics`  | Aggregated stats: total analyses, pattern counts  |
@@ -144,18 +144,18 @@ curl -X POST http://localhost:8000/analyze \
 
 ## Detection Rules
 
-| Rule                     | Severity   | What It Catches                                        |
-|--------------------------|------------|--------------------------------------------------------|
-| `DELETE_WITHOUT_WHERE`   | CRITICAL   | DELETE statements missing a WHERE clause               |
-| `UPDATE_WITHOUT_WHERE`   | CRITICAL   | UPDATE statements missing a WHERE clause               |
-| `DROP_TABLE`             | CRITICAL   | DROP TABLE statements (destructive operations)         |
+| Rule                     | Severity   | What It Catches                                         |
+|--------------------------|------------|-------------------------------------------------------- |
+| `DELETE_WITHOUT_WHERE`   | CRITICAL   | DELETE statements missing a WHERE clause                |
+| `UPDATE_WITHOUT_WHERE`   | CRITICAL   | UPDATE statements missing a WHERE clause                |
+| `DROP_TABLE`             | CRITICAL   | DROP TABLE statements (destructive operations)          |
 | `FUNCTION_ON_COLUMN`     | HIGH       | Functions wrapping columns in WHERE (breaks SARGability)|
-| `LEFT_JOIN_WHERE_TRAP`   | HIGH       | WHERE conditions that nullify LEFT JOIN behavior       |
-| `SELECT_STAR`            | MEDIUM     | SELECT * instead of specific columns                   |
-| `LEADING_WILDCARD_LIKE`  | MEDIUM     | LIKE '%pattern' preventing index usage                 |
-| `NOT_IN_SUBQUERY`        | MEDIUM     | NOT IN with subqueries (NULL-unsafe, slow)             |
-| `OR_ACROSS_COLUMNS`      | MEDIUM     | OR conditions across different columns                 |
-| `MISSING_LIMIT`          | LOW        | SELECT without LIMIT on unbounded queries              |
+| `LEFT_JOIN_WHERE_TRAP`   | HIGH       | WHERE conditions that nullify LEFT JOIN behavior        |
+| `SELECT_STAR`            | MEDIUM     | SELECT * instead of specific columns                    |
+| `LEADING_WILDCARD_LIKE`  | MEDIUM     | LIKE '%pattern' preventing index usage                  | 
+| `NOT_IN_SUBQUERY`        | MEDIUM     | NOT IN with subqueries (NULL-unsafe, slow)              |
+| `OR_ACROSS_COLUMNS`      | MEDIUM     | OR conditions across different columns                  |
+| `MISSING_LIMIT`          | LOW        | SELECT without LIMIT on unbounded queries               |
 
 ---
 
