@@ -118,7 +118,7 @@ npm run dev
 ## API Reference
 
 | Method | Endpoint    | Description                                       |
-|--------|-------------|------------------------------------------------- -|
+|--------|-------------|---------------------------------------------------|
 | POST   | `/analyze`  | Submit a SQL query → returns full analysis report |
 | POST   | `/feedback` | Submit accept/reject feedback on an analysis      |
 | GET    | `/metrics`  | Aggregated stats: total analyses, pattern counts  |
