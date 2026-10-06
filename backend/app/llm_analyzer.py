@@ -105,7 +105,7 @@ def analyze_with_llm(
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=config.LLM_MAX_TOKENS,
+            max_completion_tokens=config.LLM_MAX_TOKENS,
         )
         elapsed_ms = int((time.time() - start) * 1000)
 

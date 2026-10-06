@@ -213,7 +213,7 @@ All configuration is managed through environment variables (`.env` file):
 Groq_API_KEY=your-Groq-api-key
 
 # Optional (defaults shown)
-LLM_MODEL=Groq-2.5-flash
+LLM_MODEL=groq/compound
 LLM_MAX_TOKENS=4096
 CHROMA_PERSIST_DIR=./data/chroma_db
 SQLITE_DB_PATH=./data/sqlops_guardian.db
