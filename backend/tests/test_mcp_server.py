@@ -594,18 +594,35 @@ def registered():
     return {t.name: t for t in tools}
 
 
-def test_exactly_three_tools_are_exposed(registered):
-    assert set(registered) == {"lint_sql", "search_similar_cases", "analyze_sql"}
+# The three tools that only ever parse SQL. verify_rewrite is deliberately
+# excluded from these: it is the one tool that executes the query it is given,
+# so the invariant the others share does not hold for it and asserting it would
+# be asserting something false.
+NON_EXECUTING = ["lint_sql", "search_similar_cases", "analyze_sql"]
 
 
-@pytest.mark.parametrize("name", ["lint_sql", "search_similar_cases", "analyze_sql"])
+def test_exactly_four_tools_are_exposed(registered):
+    assert set(registered) == {
+        "lint_sql", "search_similar_cases", "analyze_sql", "verify_rewrite",
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["lint_sql", "search_similar_cases", "analyze_sql", "verify_rewrite"]
+)
 def test_every_tool_has_a_description(registered, name):
     assert registered[name].description
 
 
-@pytest.mark.parametrize("name", ["lint_sql", "search_similar_cases", "analyze_sql"])
+@pytest.mark.parametrize("name", NON_EXECUTING)
 def test_every_tool_requires_a_query(registered, name):
     assert registered[name].input_schema["required"] == ["query"]
+
+
+def test_verify_rewrite_requires_both_queries(registered):
+    assert registered["verify_rewrite"].input_schema["required"] == [
+        "original", "rewrite",
+    ]
 
 
 def test_top_k_is_optional_and_defaults_to_three(registered):
@@ -648,9 +665,37 @@ def test_analyze_description_points_back_at_lint_sql(registered):
     assert "Prefer lint_sql" in registered["analyze_sql"].description
 
 
-@pytest.mark.parametrize("name", ["lint_sql", "search_similar_cases", "analyze_sql"])
+@pytest.mark.parametrize("name", NON_EXECUTING)
 def test_every_description_says_the_sql_is_not_executed(registered, name):
     assert "never executed" in registered[name].description
+
+
+def test_verify_rewrite_description_admits_that_it_executes_sql(registered):
+    """The one tool that does execute SQL must say so, unambiguously.
+
+    A model that believes this tool is inert like the other three could offer
+    it for a production query. The description has to carry both halves: that
+    it runs the SQL, and that it runs it only against a throwaway database.
+    """
+    description = registered["verify_rewrite"].description
+    assert "DOES execute SQL" in description
+    assert "read-only" in description
+    assert "disposable" in description
+    assert "never touched" in description
+
+
+def test_verify_rewrite_description_explains_the_three_verdicts(registered):
+    """A caller that collapses the verdicts loses the whole point of them."""
+    description = registered["verify_rewrite"].description
+    for verdict in ("not_equivalent", "equivalent_on_test_data", "undetermined"):
+        assert verdict in description
+    assert "evidence, not proof" in description
+    assert "NOT a pass" in description
+
+
+def test_verify_rewrite_description_points_at_analyze_sql(registered):
+    """It has to be discoverable from the tool that produces the rewrites."""
+    assert "analyze_sql" in registered["verify_rewrite"].description
 
 
 # --------------------------------------------------------------------------
@@ -858,3 +903,124 @@ def test_the_description_tells_the_model_to_report_final_risk(registered):
 def test_the_description_distinguishes_skipped_from_failed(registered):
     desc = registered["analyze_sql"].description
     assert "skipped" in desc and "failed" in desc
+
+
+# --------------------------------------------------------------------------
+# verify_rewrite
+#
+# The adapter is thin, so these cover the shaping and the argument validation
+# rather than the verification logic -- that lives in test_verifier.py, which
+# scripts the agent loop. The fixture database is built into tmp_path and
+# pointed at via config, so no test touches the configured VERIFY_DB_PATH.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def verify_env(tmp_path, monkeypatch):
+    """A fresh fixture database, and no API key so the oracle runs alone."""
+    from app import config as config_mod, verify_fixture
+
+    path = tmp_path / "verify_mcp.db"
+    verify_fixture.build(path)
+    monkeypatch.setattr(config_mod.config, "VERIFY_DB_PATH", str(path))
+    monkeypatch.setattr(config_mod.config, "GROQ_API_KEY", "")
+    return path
+
+
+EQUIVALENT_REWRITE = (
+    "SELECT id, status FROM orders WHERE status = 'shipped' OR status = 'pending'",
+    "SELECT id, status FROM orders WHERE status IN ('shipped', 'pending')",
+)
+UNION_ALL_REWRITE = (
+    "SELECT id FROM orders WHERE status = 'shipped' OR total > 500",
+    "SELECT id FROM orders WHERE status = 'shipped' "
+    "UNION ALL SELECT id FROM orders WHERE total > 500",
+)
+
+
+def test_verify_rewrite_catches_the_union_all_bug(verify_env):
+    """The regression this whole feature exists for (commit 71c7907)."""
+    result = mcp_server.verify_rewrite(*UNION_ALL_REWRITE)
+    assert result["verdict"] == "not_equivalent"
+    assert result["decided_without_llm"] is True
+
+
+def test_verify_rewrite_accepts_an_equivalent_rewrite(verify_env):
+    result = mcp_server.verify_rewrite(*EQUIVALENT_REWRITE)
+    assert result["verdict"] == "equivalent_on_test_data"
+
+
+def test_verify_rewrite_returns_json_serialisable_output(verify_env):
+    result = mcp_server.verify_rewrite(*UNION_ALL_REWRITE)
+    assert json.dumps(result), "MCP has to serialise this over the wire"
+    assert set(result) >= {
+        "verdict", "evidence", "steps_taken", "decided_without_llm", "tool_calls",
+    }
+
+
+def test_verify_rewrite_includes_the_audit_trail(verify_env):
+    result = mcp_server.verify_rewrite(*UNION_ALL_REWRITE)
+    assert result["tool_calls"], "the reasoning trace must reach the host"
+    assert result["tool_calls"][0]["tool"] == "compare_results"
+
+
+def test_verify_rewrite_evidence_cites_numbers(verify_env):
+    """Evidence a reviewer cannot check is not evidence."""
+    result = mcp_server.verify_rewrite(*UNION_ALL_REWRITE)
+    assert "6" in result["evidence"] and "8" in result["evidence"]
+
+
+@pytest.mark.parametrize("original,rewrite", [
+    ("", "SELECT 1"),
+    ("SELECT 1", ""),
+    ("   ", "SELECT 1"),
+    (None, "SELECT 1"),
+    ("SELECT 1", None),
+])
+def test_verify_rewrite_rejects_empty_arguments(verify_env, original, rewrite):
+    with pytest.raises(ToolError):
+        mcp_server.verify_rewrite(original, rewrite)
+
+
+def test_verify_rewrite_rejects_an_oversized_query(verify_env):
+    with pytest.raises(ToolError, match="over the"):
+        mcp_server.verify_rewrite("SELECT " + "a" * 30_000, "SELECT 1")
+
+
+def test_verify_rewrite_reports_undetermined_for_a_non_select(verify_env):
+    """A write is refused by the verifier, and that is not a pass."""
+    result = mcp_server.verify_rewrite("SELECT id FROM orders", "DROP TABLE orders")
+    assert result["verdict"] == "undetermined"
+
+
+def test_verify_rewrite_wraps_an_internal_failure_in_a_tool_error(
+    verify_env, monkeypatch
+):
+    def boom(*a, **k):
+        raise RuntimeError("fixture directory is not writable")
+
+    monkeypatch.setattr(mcp_server, "_verify_rewrite", boom)
+    with pytest.raises(ToolError, match="not writable"):
+        mcp_server.verify_rewrite(*EQUIVALENT_REWRITE)
+
+
+def test_verify_rewrite_is_annotated_read_only(registered):
+    """It executes SQL but writes nothing, not even the analysis log."""
+    assert registered["verify_rewrite"].annotations.read_only_hint is True
+
+
+def test_verify_rewrite_is_annotated_open_world(registered):
+    """It may reach Groq when the results match."""
+    assert registered["verify_rewrite"].annotations.open_world_hint is True
+
+
+def test_verify_rewrite_is_not_annotated_idempotent(registered):
+    """The probing step is not guaranteed to repeat itself."""
+    assert registered["verify_rewrite"].annotations.idempotent_hint is False
+
+
+def test_server_instructions_distinguish_the_executing_tool():
+    """The server-level hint must not claim nothing executes SQL any more."""
+    instructions = mcp_server.mcp.instructions
+    assert "verify_rewrite" in instructions
+    assert "never execute the SQL" in instructions
+    assert "disposable test database" in instructions
