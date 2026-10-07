@@ -34,6 +34,22 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # The test suite seeds ChromaDB, whose default embedding function
+      # downloads the all-MiniLM-L6-v2 ONNX model (~80MB) to
+      # ~/.cache/chroma/onnx_models/ on first use. Without this the download
+      # happens on every run; the model is a fixed artifact, so a hit makes
+      # the seeding step purely local.
+      - name: Cache ChromaDB embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/chroma
+          # Keyed on the lock file so a chromadb upgrade that changes the
+          # bundled model name re-downloads, with a fallback to any existing
+          # cache since the model rarely changes between versions.
+          key: chroma-model-${{ runner.os }}-${{ hashFiles('backend/uv.lock') }}
+          restore-keys: |
+            chroma-model-${{ runner.os }}-
+
       # Gate: the suite must pass.
       - name: Run pytest
         run: uv run pytest -q
