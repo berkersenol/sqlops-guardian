@@ -161,7 +161,7 @@ curl -X POST http://localhost:8000/analyze \
 
 ## Tech Stack
 
-**Backend:** Python 3.12 · FastAPI · Pydantic · ChromaDB · Groq API · SQLite · uv
+**Backend:** Python 3.12 · FastAPI · Pydantic · sqlglot · ChromaDB · Groq API · SQLite · uv
 
 **Frontend:** React 18 · Vite · Tailwind CSS · Recharts · react-markdown
 
@@ -177,7 +177,8 @@ sqlops-guardian/
 │   ├── app/
 │   │   ├── api.py              # FastAPI routes + CORS
 │   │   ├── config.py           # Environment config via .env
-│   │   ├── linter.py           # 10 deterministic SQL rules
+│   │   ├── linter.py           # 10 deterministic SQL rules (sqlglot syntax tree)
+│   │   ├── linter_regex.py     # Regex rules, fallback when parsing fails
 │   │   ├── rag.py              # ChromaDB vector search
 │   │   ├── llm_analyzer.py     # Groq integration
 │   │   ├── pipeline.py         # Orchestrator: Linter → RAG → LLM → Log
@@ -271,30 +272,87 @@ uv run python -m evals.eval_linter --min-f1 0.8   # also exit 1 if overall F1 dr
 Results land in `backend/evals/results/`, which is gitignored apart from committed
 baselines so runs can be compared over time.
 
-### Baseline: regex linter
+### Results: regex vs. sqlglot
 
-`backend/evals/results/linter_baseline_regex.json`
+The linter originally matched raw text with regular expressions. It now parses
+each query into a sqlglot syntax tree, falling back to the regex rules only when
+parsing fails. Both runs are committed, so the comparison is reproducible:
+`linter_baseline_regex.json` and `linter_sqlglot.json` in `backend/evals/results/`.
+
+| | regex | sqlglot |
+|---|---|---|
+| Precision | 0.83 | **1.00** |
+| Recall | 0.83 | **1.00** |
+| F1 | 0.83 | **1.00** |
+| False positives | 4 | **0** |
+| False negatives | 4 | **0** |
+
+Exact-match rate by category:
+
+| Category | regex | sqlglot |
+|---|---|---|
+| `clean` | 9/9 | 9/9 |
+| `single` | 12/12 | 12/12 |
+| `multi` | 3/3 | 3/3 |
+| `tricky` | **0/8** | **8/8** |
+
+Per rule, precision / recall:
+
+| Rule | regex | sqlglot |
+|---|---|---|
+| `DELETE_WITHOUT_WHERE` | 0.50 / 0.33 | 1.00 / 1.00 |
+| `UPDATE_WITHOUT_WHERE` | 1.00 / 0.50 | 1.00 / 1.00 |
+| `LEFT_JOIN_WHERE_TRAP` | 1.00 / 0.50 | 1.00 / 1.00 |
+| `DROP_TABLE` | 0.67 / 1.00 | 1.00 / 1.00 |
+| `FUNCTION_ON_COLUMN` | 0.75 / 1.00 | 1.00 / 1.00 |
+| `MISSING_LIMIT` | 0.75 / 1.00 | 1.00 / 1.00 |
+| `SELECT_STAR` | 1.00 / 1.00 | 1.00 / 1.00 |
+| `LEADING_WILDCARD_LIKE` | 1.00 / 1.00 | 1.00 / 1.00 |
+| `NOT_IN_SUBQUERY` | 1.00 / 1.00 | 1.00 / 1.00 |
+| `OR_ACROSS_COLUMNS` | 1.00 / 1.00 | 1.00 / 1.00 |
+
+Four rules were already perfect on this set and stayed perfect — the gain is
+concentrated in the six that depended on reading text as structure.
+
+### Why the tree fixes the tricky cases
+
+All eight tricky failures had one root cause: the old rules matched text, so they
+could not tell code from a comment or a string, and had no notion of statement
+boundaries. Parsing removes the ambiguity rather than patching around it:
+
+- **Comments are dropped during parsing**, so `-- DROP TABLE users` yields no
+  `Drop` node at all.
+- **String contents become opaque literals**, so `'DELETE FROM users'` is data.
+- **Each statement is checked on its own**, so a `WHERE` in statement two cannot
+  make a bare `DELETE` in statement one look safe.
+- **Alias syntax is normalised**, so `UPDATE orders o SET`, `UPDATE orders AS o
+  SET`, and a quoted `"user accounts"` table are all recognised. The old regex
+  required `UPDATE <word> SET` and silently analysed nothing otherwise.
+- **A window function's `ORDER BY` lives in its own `Window` node**, so it never
+  appears in the query's top-level `order` and no longer reads as a missing `LIMIT`.
+- **Function arguments are inspectable**, so `DATE('2025-01-01')` (a function on a
+  constant) is distinguishable from `UPPER(name)` (a function on a column).
+
+Two refinements fell out of the rewrite:
+
+- `FUNCTION_ON_COLUMN` no longer needs a hardcoded list of six function names. Any
+  function applied to a column is caught, which is strictly broader than before.
+- `LEFT_JOIN_WHERE_TRAP` identifies the joined table by its alias when it has one
+  and by its table name when it does not, so `LEFT JOIN orders o`, `LEFT JOIN
+  orders AS o`, and `LEFT JOIN orders` are all covered. `IS NULL` / `IS NOT NULL`
+  remain exempt, since that is the deliberate anti-join idiom.
+
+### Graceful degradation
+
+If `sqlglot.parse()` raises a `ParseError`, the linter logs a warning and falls back
+to the regex rules in `app/linter_regex.py` for that query, so a syntactically
+invalid query still gets best-effort findings instead of none:
 
 ```
-Overall  precision 0.83  recall 0.83  F1 0.83   (TP 20, FP 4, FN 4)
-
-clean    9/9   (100%)
-single  12/12  (100%)
-multi    3/3   (100%)
-tricky   0/8   (0%)
+DROP TABLE users ((( GARBAGE      -> DROP_TABLE
+DELETE FROM users GROUP ORDER (((  -> DELETE_WITHOUT_WHERE
+UPDATE t SET x = 1 ((( ???         -> UPDATE_WITHOUT_WHERE
 ```
-
-The current regex implementation handles every straightforward case and **fails all
-eight tricky ones** — four false positives (it reads `DROP TABLE` in a comment and
-`DELETE FROM users` inside a string literal as real statements, flags a function on
-a constant, and counts a window function's `ORDER BY` as a missing `LIMIT`) and four
-misses (`LEFT JOIN orders AS o`, `UPDATE orders o SET`, a `DELETE` whose only `WHERE`
-belongs to a later statement, and a quoted table name).
-
-This is not a set of individual bugs. It is one root cause: the rules match text, so
-they have no way to know whether a token is code, a comment, a string, or which
-statement it belongs to. Fixing it needs a syntax tree, not more regex — which is what
-the eval exists to measure.
 
 ---
 

@@ -1,0 +1,107 @@
+{
+  "timestamp": "2026-10-07T10:03:16",
+  "n_cases": 32,
+  "overall": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "tp": 24,
+    "fp": 0,
+    "fn": 0
+  },
+  "per_rule": {
+    "DELETE_WITHOUT_WHERE": {
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "DROP_TABLE": {
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "FUNCTION_ON_COLUMN": {
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "LEADING_WILDCARD_LIKE": {
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "LEFT_JOIN_WHERE_TRAP": {
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "MISSING_LIMIT": {
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "NOT_IN_SUBQUERY": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "OR_ACROSS_COLUMNS": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "SELECT_STAR": {
+      "tp": 4,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "UPDATE_WITHOUT_WHERE": {
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  },
+  "per_category": {
+    "clean": {
+      "total": 9,
+      "exact": 9,
+      "exact_match_rate": 1.0
+    },
+    "single": {
+      "total": 12,
+      "exact": 12,
+      "exact_match_rate": 1.0
+    },
+    "multi": {
+      "total": 3,
+      "exact": 3,
+      "exact_match_rate": 1.0
+    },
+    "tricky": {
+      "total": 8,
+      "exact": 8,
+      "exact_match_rate": 1.0
+    }
+  },
+  "mismatches": []
+}
