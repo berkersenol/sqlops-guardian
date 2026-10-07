@@ -7,7 +7,7 @@
 [![React](https://img.shields.io/badge/React-18+-61DAFB.svg)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-99%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-538%20passing-brightgreen.svg)]()
 
 ---
 
@@ -156,6 +156,7 @@ the same functions the REST API uses.
 | `lint_sql(query)` | Free, milliseconds, deterministic | No | No |
 | `search_similar_cases(query, top_k=3)` | Free, local embeddings | No | No |
 | `analyze_sql(query)` | Groq API tokens, seconds | Yes (Groq) | Appends to the SQLite analysis log |
+| `verify_rewrite(original, rewrite)` | Free when results differ; Groq tokens when they match | Only when results match | No |
 
 `lint_sql` is the default choice for "is this query OK?" — it is the sqlglot
 rule engine alone, so it needs no API key and returns identical findings for
@@ -182,8 +183,19 @@ reported `final_risk` at the worst lint finding so the LLM cannot talk the risk
 down, and returns a per-layer `status` for each of linter / rag / llm / log.
 See [Privacy and Safety](#privacy-and-safety).
 
-**No tool executes the SQL it is given.** Queries are parsed by sqlglot and
-embedded as text; nothing connects to a database with them.
+`verify_rewrite` checks that a proposed rewrite actually returns the same rows
+as the original — something `analyze_sql` does not do for its own suggestions.
+See [Rewrite verification](#rewrite-verification).
+
+**`lint_sql`, `search_similar_cases` and `analyze_sql` never execute the SQL
+they are given.** Queries are parsed by sqlglot and embedded as text; nothing
+connects to a database with them.
+
+`verify_rewrite` is the one deliberate exception, because equivalence cannot be
+checked without running both queries. It executes only single `SELECT`s, only
+against a small disposable fixture database, over a connection opened read-only
+— never against any real database. The controls are described under
+[Rewrite verification](#rewrite-verification).
 
 ### Claude Desktop (Windows)
 
@@ -404,6 +416,203 @@ The reason now comes from the layer that actually failed.
 
 ---
 
+## Rewrite Verification
+
+`analyze_sql` asks an LLM for a rewritten query and hands it back. Nothing
+checked that the rewrite returned the same rows as the original.
+
+That is not a hypothetical gap. This repository shipped a seed case whose
+"fix" used `UNION ALL` where the original `OR` semantics required `UNION`, and
+it sat in the knowledge base being retrieved as a precedent until someone read
+it closely (commit `71c7907`). A wrong rewrite is worse than no rewrite,
+because it arrives looking authoritative.
+
+`verify_rewrite(original, rewrite)` is the check: it executes both queries
+against a purpose-built fixture database and compares the results.
+
+### The comparison is the oracle, not the LLM
+
+On a fixed dataset, comparing two result sets as **multisets** is decisive. If
+they differ, the rewrite is not equivalent — that is a proof, and no model
+opinion overturns it.
+
+So the deterministic comparison runs **first**, before any network call. A
+mismatch short-circuits to `not_equivalent` and Groq is never contacted. This
+is not an optimisation. It means the trustworthy half of the verdict space does
+not depend on an LLM at all, and in the current eval it settles every wrong
+rewrite on its own:
+
+```
+Verdicts correct          6/6  (100%)
+Decided without the LLM   3/6        <- all three wrong rewrites, no LLM involved
+```
+
+The LLM runs only on the remaining case — the results matched — where the
+interesting question is no longer "are these equivalent on this data" (answered:
+yes) but **"is this data strong enough for that match to mean anything?"**
+Deciding what evidence would separate two queries is a creative task, and the
+one thing a fixed comparison cannot do.
+
+Multisets rather than sets, because duplicates are exactly where these rewrites
+go wrong. Rewriting `WHERE EXISTS (SELECT ... FROM orders)` as a `JOIN` emits
+the left row once per match; as *sets* the two results are identical, so a set
+comparison calls that rewrite equivalent. Row order is ignored, since neither
+query promises an order without `ORDER BY`.
+
+### Three verdicts, because "equivalent" would be a lie
+
+| Verdict | Meaning | Strength |
+|---------|---------|----------|
+| `not_equivalent` | Both queries ran and returned different results | **Proof.** Deterministic, reproducible, no LLM |
+| `equivalent_on_test_data` | Results matched and no distinguishing case was found | **Evidence.** True of the fixture, not of the queries |
+| `undetermined` | Step limit reached, a query was rejected, or something failed | **Nothing.** Not a pass |
+
+`equivalent_on_test_data` is deliberately not called `equivalent`. A rewrite
+that diverges only on an empty table, or only when some column happens to be
+entirely `NULL`, earns that verdict while still being wrong in production. The
+name carries the caveat so a caller cannot drop it by accident.
+
+`undetermined` is kept apart from `not_equivalent` for the same reason
+`LayerStatus` keeps `skipped` apart from `failed`: "we could not check this" and
+"we proved this is wrong" call for completely different responses.
+
+### The fixture is designed backwards from the failure modes
+
+A comparison is only as good as the rows it runs against. Two queries that
+differ solely in `NULL` handling return identical results on data without
+`NULL`s, and the comparison then "proves" an equivalence that does not hold. So
+`app/verify_fixture.py` exists to break specific rewrites, and every row is
+there for a reason:
+
+| Fixture property | What it exposes |
+|------------------|-----------------|
+| `orders.user_id` is nullable, one row is `NULL` | `NOT IN` to `NOT EXISTS`. One `NULL` makes `id NOT IN (...)` evaluate to `NULL` rather than `TRUE` for every candidate row, so the original returns **nothing** |
+| Two users have no orders at all | The other half of that trap — otherwise `NOT EXISTS` has nothing to return and the mismatch vanishes |
+| Two orders match **both** `status='shipped'` and `total > 500` | `UNION` vs `UNION ALL`. With no row matching both branches the two are identical and the bug is invisible |
+| Two users each have two `'shipped'` orders | `EXISTS` to `JOIN` fan-out, visible only as a multiset difference |
+| `created_at` spans 2024/2025/2026, both 2025 boundaries, and a `NULL` | Off-by-one in a date range, and an inclusive upper bound |
+| A `NULL` status, a `NULL` email, a `NULL` discount | Deliberately *inert* `NULL`s — a fixture where every `NULL` breaks something would not show whether the agent can tell a dangerous `NULL` from a harmless one |
+| `order_items` has no primary key and genuinely duplicate rows | A multiset comparison accidentally written as a set comparison |
+
+The golden set records which rows expose each case in an `exposed_by` field, and
+`tests/test_verifier.py` asserts each property directly — so an edit that
+disarms a case fails a test rather than quietly leaving the eval testing
+nothing.
+
+### Executing SQL breaks the project's invariant, so it is rebuilt by containment
+
+Everywhere else, SQL is data and is never executed, which makes a hostile string
+inert. Here, executing it **is** the feature. And the path is untrusted end to
+end: user text, then LLM, then SQL we execute. Prompt injection inside a SQL
+comment is a plausible route to `DROP TABLE`.
+
+The controls, weakest to strongest:
+
+1. **Single statement, `SELECT`-shaped, parsed with sqlglot.** Not a regex.
+   `/*c*/ DELETE FROM orders` defeats any check anchored on a leading `SELECT`.
+2. **No DML/DDL node anywhere in the parse tree** — not just at the root. This
+   one matters: sqlglot parses
+
+   ```sql
+   WITH x AS (DELETE FROM orders RETURNING id) SELECT * FROM x
+   ```
+
+   with a root type of `Select`, so a root-only check accepts a statement that
+   empties a table. `exp.Command`, sqlglot's catch-all for syntax it did not
+   model, is refused too — if the parser cannot describe a statement, we cannot
+   reason about it.
+3. **A read-only connection** (`mode=ro`, `uri=True`). Enforced by SQLite
+   itself, so a write fails with *"attempt to write a readonly database"* even
+   if the parser were fooled entirely.
+4. **A row limit and a wall-clock timeout.** The limit is applied by fetching
+   `limit+1` rows, not by appending `LIMIT` to the SQL — rewriting the query
+   would change the thing being measured. The timeout uses a SQLite progress
+   handler rather than `signal.alarm`, which is POSIX-only.
+5. **A disposable fixture database** holding nothing of value, rebuildable from
+   `app/verify_fixture.py` at any time.
+
+The last one is the real boundary. The parser check is there so that a bug does
+not become a breach. `tests/test_verifier.py` drives every attack above through
+`run_query` and then **re-checks the data afterwards** — a guard that returned
+the right error while still having run the statement would pass a
+rejection-only assertion.
+
+### The loop
+
+A hand-written tool-calling loop against the Groq SDK, with no agent framework,
+so every step is visible:
+
+```python
+messages = [system prompt, the two queries, "results already matched"]
+
+for step in range(budget):              # 5 LLM turns; phase 1 already took one
+    response = groq.chat.completions.create(messages, tools=TOOL_SCHEMAS)
+
+    if response has tool_calls:
+        for each call:
+            if name == "submit_verdict":  ->  parse the verdict, stop
+            else: execute it locally, append a {"role": "tool"} result
+        continue
+    else:
+        parse the verdict out of the message content (fallback path)
+```
+
+Four tools. `get_schema()` returns tables, columns, **nullability** and row
+counts — an agent cannot reason about `NOT IN` versus `NOT EXISTS` without
+knowing which columns can be `NULL`. `run_query(sql)` probes the data under all
+the controls above. `compare_results(sql_a, sql_b)` is the oracle, available to
+the agent for variants it constructs. `submit_verdict(verdict, evidence)` ends
+the run.
+
+That fourth tool exists because of how the loop actually behaved, not by
+preference. Asked to put its final answer in message content,
+`openai/gpt-oss-120b` instead tried to emit it as a tool call named `json`,
+which Groq rejects outright:
+
+```
+400 - attempted to call tool 'json' which was not in request.tools
+```
+
+That killed the probing step on two of three pairs in the first live eval run.
+A model in tool-calling mode wants to return structured output through a tool,
+so the fix was to give it one rather than to argue with it in the prompt. The
+verdict now also arrives against a declared `enum` instead of being scraped out
+of prose.
+
+**Every tool call and result is logged** and returned in `tool_calls`. The agent
+knows nothing except what those calls returned, so that list is not logging
+decoration — it is the reasoning trace, and the only way to tell a verdict that
+followed from evidence from one the model asserted.
+
+### Why there is a step limit
+
+`VERIFY_MAX_STEPS` defaults to 6 and is the budget for the whole run, phase 1
+included, so `steps_taken` can never exceed it. Three reasons, worth keeping
+distinct:
+
+- **Cost grows faster than linearly.** Each turn resends the whole message
+  history.
+- **Models loop.** The characteristic failure is not a wrong answer but a model
+  calling the same probe three times because it is unsatisfied and has no new
+  idea.
+- **It forces a decision.** Hitting the cap is information: the run yields
+  `undetermined`, not a guess. Falsely claiming equivalence is the expensive
+  error here, so the limit fails toward "not verified".
+
+### The model cannot overturn the oracle
+
+The agent is told to claim `not_equivalent` only off a `compare_results` call
+that actually returned `match=false`. If it claims it anyway, the verdict is
+**downgraded** and its reasoning preserved for a human to read. The
+deterministic comparison on the pair already matched, so the only admissible
+source is a variant comparison the agent itself ran.
+
+A truncated match is also refused rather than reported as a match: if both sides
+hit the row limit and agreed on the rows fetched, the rows *not* fetched could
+differ, so the result is `undetermined`.
+
+---
+
 ## Detection Rules
 
 | Rule                     | Severity   | What It Catches                                         |
@@ -448,10 +657,12 @@ sqlops-guardian/
 │   │   ├── models.py           # Pydantic models
 │   │   ├── seed_cases.py       # Seed data loader
 │   │   ├── serialization.py    # Domain models -> JSON (shared by API and MCP)
-│   │   └── sql_sanitizer.py    # Literal masking + normalization at the LLM boundary
-│   ├── mcp_server.py           # MCP server over stdio (3 tools)
+│   │   ├── sql_sanitizer.py    # Literal masking + normalization at the LLM boundary
+│   │   ├── verifier.py         # Rewrite verification agent (hand-written tool loop)
+│   │   └── verify_fixture.py   # Disposable SQLite fixture the verifier executes against
+│   ├── mcp_server.py           # MCP server over stdio (4 tools)
 │   ├── tests/                  # pytest suite
-│   ├── evals/                  # Linter + retrieval eval harnesses and golden sets
+│   ├── evals/                  # Linter, retrieval + verifier eval harnesses and golden sets
 │   ├── cases/                  # Seed case data
 │   ├── samples/                # Example SQL files
 │   └── main.py                 # Entry point
@@ -487,6 +698,12 @@ SQLITE_DB_PATH=./data/sqlops_guardian.db
 RAG_TOP_K=3
 RAG_MIN_SIMILARITY=0.5
 LOG_LEVEL=INFO
+
+# Rewrite verification (app/verifier.py)
+VERIFY_DB_PATH=./data/verify_fixture.db
+VERIFY_MAX_STEPS=6
+VERIFY_ROW_LIMIT=200
+VERIFY_TIMEOUT_MS=2000
 ```
 
 `LLM_MODEL` must name a chat model the account can actually access. Groq
@@ -504,6 +721,15 @@ against a golden set, not chosen by feel — raising it to 0.6 discards about a
 third of genuine matches. See [Retrieval evaluation](#retrieval-evaluation)
 before changing it.
 
+The `VERIFY_*` settings bound the one component that executes SQL.
+`VERIFY_DB_PATH` is a disposable fixture, deliberately not the analysis log, and
+is always opened read-only; delete it and it is rebuilt from
+`app/verify_fixture.py`. `VERIFY_MAX_STEPS` is the budget for a whole
+verification run including the deterministic comparison, so `steps_taken` never
+exceeds it. `VERIFY_ROW_LIMIT` and `VERIFY_TIMEOUT_MS` bound a single query, and
+a comparison whose results were truncated reports `undetermined` rather than a
+match. See [Rewrite Verification](#rewrite-verification).
+
 ---
 
 ## Running Tests
@@ -513,9 +739,20 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-416 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, case store, MCP server, seed data, SQL sanitization, and the retrieval eval harness.
+534 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, case store, MCP server, seed data, SQL sanitization, the rewrite verifier, and the retrieval eval harness.
 The Groq client is mocked throughout, so the suite needs no API key and makes no network calls.
 Each test gets its own temporary SQLite file and ChromaDB directory, so runs never touch real data.
+
+The verifier's tests are worth a separate note, because it is the one component
+that executes SQL. `tests/test_verifier.py` is table-driven over sixteen
+statements that must never run — batched `DROP`s, comment-prefixed `DELETE`s, a
+`DELETE` hidden inside a CTE that sqlglot parses as a `Select` — and after each
+rejection it **re-reads the fixture** to confirm the data is untouched, since a
+guard that returned the right error while still having executed the statement
+would pass a rejection-only assertion. It also asserts `mode=ro` refuses a write
+with the guard out of the path entirely, and scripts the agent loop turn by turn
+to cover the step limit, malformed tool arguments, and a model claiming
+`not_equivalent` without evidence.
 
 ---
 
@@ -775,6 +1012,106 @@ uv run python -m evals.eval_retrieval --top-k 5
 uv run python -m evals.eval_retrieval --min-hit-rate 1.0   # exit 1 below that (CI)
 ```
 
+### Verification evaluation
+
+Six rewrite pairs — three that preserve the original's results, three that
+change them subtly — in `evals/golden_verifier.json`. The wrong three are the
+`UNION ALL` bug this project actually shipped, the `NOT IN` / `NOT EXISTS` trap
+with `NULL`s, and an `EXISTS`-to-`JOIN` fan-out.
+
+```bash
+# the deterministic oracle alone -- no network, no key. This is what CI gates.
+python -m evals.eval_verifier --no-llm --min-accuracy 1.0
+
+# the full agent, including the Groq tool-calling loop (needs GROQ_API_KEY)
+python -m evals.eval_verifier
+```
+
+Live run against `openai/gpt-oss-120b`:
+
+```
+Verifier eval on 6 rewrite pairs  (LLM on, openai/gpt-oss-120b)
+Verdicts correct   6/6  (100%)
+Decided without the LLM   3/6   (deterministic comparison alone; these are proofs)
+LLM probing runs   3   failures: none
+
+Category           Correct
+correct             3/3    (100%)
+subtly_wrong        3/3    (100%)
+
+Pair                              Expected                  Actual                     Steps  LLM?
+ ok-or-to-in                      equivalent_on_test_data   equivalent_on_test_data        4   yes
+ ok-sargable-date-range           equivalent_on_test_data   equivalent_on_test_data        6   yes
+ ok-or-across-columns-union       equivalent_on_test_data   equivalent_on_test_data        5   yes
+ bad-union-all-duplicates         not_equivalent            not_equivalent                 1    no
+ bad-not-in-vs-not-exists-nulls   not_equivalent            not_equivalent                 1    no
+ bad-exists-to-join-fanout        not_equivalent            not_equivalent                 1    no
+```
+
+Read the two numbers separately. **6/6** is the verdict accuracy. **3/6 decided
+without the LLM** is the more informative one: all three wrong rewrites were
+caught in a single step by executing both queries, with no model involved. That
+is a claim about fixture design, not model quality — and it is why CI can gate
+the whole eval at 100% without an API key.
+
+The LLM therefore only ever sees the three *correct* pairs, where the risk being
+measured is the opposite one: a false alarm. It produced none, and its evidence
+cited real counts rather than restating the queries:
+
+> orders.created_at has 1 NULL row, and all 7 non-NULL values start with a
+> four-digit year and a hyphen (ISO format), so the date-range comparison and
+> `strftime('%Y')` behave identically on this data.
+
+Reporting a single accuracy figure would let good fixture design take credit for
+the model, or a talkative model get blamed for the fixture.
+
+#### What the first live run caught
+
+The first live run also scored **6/6** — while the Groq integration was in fact
+failing. Two of the three probing runs died on a `400` (`attempted to call tool
+'json'`), and the fallback path returned `equivalent_on_test_data`, which is the
+*correct* verdict, because the deterministic comparison really had matched. The
+failure was invisible in the accuracy number.
+
+So the eval now reports `probe_status` separately from the verdict, and counts
+probing failures on their own line. A broken LLM integration can no longer hide
+behind a correct answer. `tests/test_verifier.py` has a regression test for
+exactly that shape.
+
+This is the case for running an eval for real at least once. Mocked tests would
+never have found it: the loop was correct, and the provider's tool-call
+validation was the thing that disagreed.
+
+#### And what the second live run caught
+
+A later run scored **5/6**. `ok-sargable-date-range` spent four probes
+characterising the data, hit the step limit without submitting, and returned
+`undetermined` — the verifier behaving correctly (it reported "unverified"
+rather than guessing) on a rewrite that was in fact fine.
+
+The cause was a design gap, not bad luck: a hard limit the agent cannot see is
+a limit it cannot plan around. Each turn now states how many steps remain, and
+on the final turn `submit_verdict` is forced via `tool_choice`. The budget is
+unchanged at 6 — what changed is that exhausting it now yields a conclusion
+drawn from what the agent had, instead of nothing. That pair resolves at step 6
+and the run is back to 6/6.
+
+Two honest caveats worth keeping in view:
+
+- **The LLM half is not deterministic**, even at `temperature=0`. The 6/6 is one
+  run of three probing cases; the 5/6 run was the same code on the same data.
+  The deterministic 3/6 never varies, which is the argument for gating CI on
+  that half alone.
+- **The agent can reach a right verdict by shaky reasoning.** On
+  `ok-or-across-columns-union` it concluded "8 rows and 8 distinct id values, so
+  there are no duplicate ids that could be removed by `UNION`". That is the
+  wrong question — what matters is overlap *between the two branches*, and the
+  fixture does have two such rows, so `UNION`'s dedup is exercised. The verdict
+  was right, the justification was not. This is exactly why `tool_calls` and
+  `evidence` are returned rather than a bare verdict, and why the oracle is not
+  allowed to be overruled.
+
+
 ### Graceful degradation
 
 If `sqlglot.parse()` raises a `ParseError`, the linter logs a warning and falls back
@@ -795,6 +1132,8 @@ UPDATE t SET x = 1 ((( ???         -> UPDATE_WITHOUT_WHERE
 - **ChromaDB for RAG** — lightweight, embedded vector database that runs without external infrastructure. Cases build up as users submit feedback, making the system smarter over time.
 - **SQLite for operations** — zero-config, file-based database that persists via Docker volumes. Perfect for logging, metrics, and feedback without adding database infrastructure.
 - **Docker volumes for persistence** — analysis history and RAG knowledge base survive container rebuilds. Data lives in `/app/data/`, separated from application code.
+- **A deterministic oracle in front of the agent** — rewrite verification runs the comparison first and only calls an LLM when the results match. Executing two queries and comparing the results is a *proof*, so the half of the verdict space that matters most costs nothing, needs no API key, and is reproducible. The LLM is the test designer, not the judge. See [Rewrite Verification](#rewrite-verification).
+- **Verdicts that carry their own scope** — `equivalent_on_test_data` rather than `equivalent`, and `undetermined` kept distinct from `not_equivalent`. A boolean would force a caller to treat "matched on our fixture" and "proven identical" as the same claim, and "we could not check" as a pass.
 
 ---
 
