@@ -162,3 +162,179 @@ def test_garbage_llm_output_degrades_to_low_confidence(mock_groq):
     result = analyze_with_llm(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
     assert result["confidence"] == "LOW"
     assert result["tokens_used"] == 123
+
+
+# --------------------------------------------------------------------------
+# run_llm_analysis -- outcomes, not just results
+#
+# analyze_with_llm returns None for both "no API key" and "the call failed",
+# which leaves a caller unable to tell a deliberate skip from a breakage. The
+# pipeline needs that distinction to report per-layer status, so the real work
+# returns an LLMOutcome and analyze_with_llm is a thin wrapper over it.
+# --------------------------------------------------------------------------
+
+def test_a_successful_call_reports_ok(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.OK
+
+
+def test_a_successful_call_carries_the_result(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.result["risk_level"] == "MEDIUM"
+
+
+def test_a_missing_key_is_skipped_not_failed(no_llm):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.SKIPPED
+
+
+def test_the_skip_reason_names_the_missing_key(no_llm):
+    from app.llm_analyzer import run_llm_analysis
+
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert "GROQ_API_KEY" in outcome.reason
+
+
+def test_an_api_error_is_failed_not_skipped(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    mock_groq.set_error(RuntimeError("404 model_not_found"))
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.FAILED
+
+
+def test_the_failure_reason_carries_the_error_text(mock_groq):
+    """A 404 for a bad model name must be distinguishable from a network drop."""
+    from app.llm_analyzer import run_llm_analysis
+
+    mock_groq.set_error(RuntimeError("404 model_not_found"))
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert "model_not_found" in outcome.reason
+
+
+def test_a_failed_call_carries_no_result(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+
+    mock_groq.set_error(RuntimeError("boom"))
+    assert run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES).result is None
+
+
+# --------------------------------------------------------------------------
+# Empty and truncated responses
+#
+# gpt-oss models spend their token budget on internal reasoning before
+# emitting content, so too small a max_completion_tokens returns
+# finish_reason="length" with content empty. Parsing that would fabricate a
+# low-confidence result out of nothing, which reads like a real answer.
+# --------------------------------------------------------------------------
+
+def test_an_empty_response_is_reported_as_failed(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    mock_groq.set_content("")
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.FAILED
+
+
+def test_an_empty_response_is_not_turned_into_a_result(mock_groq):
+    """The bug this guards: a blank answer presented as low-confidence advice."""
+    from app.llm_analyzer import run_llm_analysis
+
+    mock_groq.set_content("")
+    assert run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES).result is None
+
+
+def test_a_whitespace_only_response_is_also_failed(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    mock_groq.set_content("   \n  ")
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.FAILED
+
+
+def test_the_empty_response_reason_mentions_the_finish_reason(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+
+    mock_groq.set_content("")
+    assert "finish_reason" in run_llm_analysis(
+        SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES
+    ).reason
+
+
+def test_analyze_with_llm_still_returns_none_on_an_empty_response(mock_groq):
+    """The back-compat wrapper keeps its documented contract."""
+    mock_groq.set_content("")
+    assert analyze_with_llm(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES) is None
+
+
+# --------------------------------------------------------------------------
+# The prompt carries the masking and injection-resistance instructions
+# --------------------------------------------------------------------------
+
+def test_the_prompt_says_literals_are_placeholders(prompt):
+    """Otherwise the model speculates about values it cannot see."""
+    assert "placeholder" in prompt.lower()
+
+
+def test_the_prompt_tells_the_model_not_to_speculate_about_values(prompt):
+    assert "do not speculate" in prompt.lower()
+
+
+def test_the_prompt_tells_the_model_the_sql_carries_no_instructions(prompt):
+    """Defence in depth behind the comment stripping."""
+    assert "no instructions" in prompt.lower()
+
+
+def test_a_truncated_response_names_the_token_limit(mock_groq):
+    """
+    The real failure mode behind this check: openai/gpt-oss-120b with too low
+    a max_completion_tokens spends the whole budget reasoning and returns
+    finish_reason="length" with content empty. The advice has to be "raise the
+    limit", not "retry".
+    """
+    from app.llm_analyzer import run_llm_analysis
+
+    mock_groq.set_content("")
+    mock_groq.set_finish_reason("length")
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert "LLM_MAX_TOKENS" in outcome.reason
+
+
+def test_a_truncated_response_is_failed(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    mock_groq.set_content("")
+    mock_groq.set_finish_reason("length")
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.FAILED
+
+
+def test_a_truncated_response_does_not_mention_retrying(mock_groq):
+    """Retrying an exhausted budget just burns tokens again."""
+    from app.llm_analyzer import run_llm_analysis
+
+    mock_groq.set_content("")
+    mock_groq.set_finish_reason("length")
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert "retry" not in outcome.reason.lower()
+
+
+def test_a_complete_response_is_unaffected_by_finish_reason_handling(mock_groq):
+    from app.llm_analyzer import run_llm_analysis
+    from app.models import LayerStatus
+
+    mock_groq.set_finish_reason("stop")
+    outcome = run_llm_analysis(SAMPLE_QUERY, SAMPLE_FINDINGS, SAMPLE_CASES)
+    assert outcome.status == LayerStatus.OK

@@ -300,12 +300,25 @@ def analyze_sql(query: str) -> dict:
     timing -- to a local SQLite analysis log, which backs the project's
     metrics. Nothing in that log is modified or deleted.
 
-    The query is sent to the LLM as text and is never executed against any
-    database.
+    Privacy: literals are stripped before anything leaves this machine.
+    Every string and number is replaced with a placeholder (:p1,
+    :p2, ...), so the LLM sees the query's structure and none of its data.
+    Table and column names are kept, since index advice is impossible
+    without them. If a query cannot be parsed and therefore cannot be
+    masked, the LLM layer is skipped rather than sent the raw text -- so a
+    query that fails to parse still gets lint findings and no LLM analysis.
 
-    This degrades rather than failing. If the knowledge base or the LLM is
-    unavailable, the deterministic lint findings are still returned and the
-    `degraded` field explains what was missing, so report what did come back
+    The SQL is never executed against any database.
+
+    Risk reporting: `final_risk` is floored at the worst deterministic lint
+    finding, so the LLM can raise the assessed risk but never lower it. If
+    the LLM rated a query less severe than the linter did, `risk_note`
+    records the disagreement. Report `final_risk`, not the LLM's own
+    risk_level.
+
+    This degrades rather than failing. Each layer reports its own status, so
+    if the knowledge base or the LLM is unavailable the lint findings still
+    come back and `layers` says what happened. Report what did come back
     rather than treating the call as failed.
 
     Args:
@@ -313,12 +326,20 @@ def analyze_sql(query: str) -> dict:
 
     Returns:
         lint_findings, overall_severity, summary: as from lint_sql.
+        final_risk: The risk to report -- the worse of the lint severity and
+            the LLM's rating, never below the lint severity.
+        risk_note: Set only when the LLM's rating was overridden by that
+            floor; it explains the disagreement.
         similar_cases: precedents from the knowledge base; may be empty.
         llm_analysis: suggested_indexes, rewritten_query, explanation,
             risk_level, confidence and estimated_improvement -- or null if
-            the LLM was unavailable.
-        degraded: Empty when every layer ran. Otherwise one message per layer
-            that did not run, naming the layer and the reason.
+            the LLM was skipped or failed.
+        layers: One entry per layer (linter, rag, llm, log) with its status
+            -- ok, skipped or failed -- and the reason. "skipped" means the
+            system chose not to run it (no API key, nothing safe to send);
+            "failed" means something went wrong. These need different advice,
+            so do not conflate them.
+        degraded: The non-ok entries from `layers`, flattened into messages.
         response_time_ms, tokens_used: latency and token cost of this call.
     """
     sql = _require_query(query)
@@ -336,38 +357,24 @@ def analyze_sql(query: str) -> dict:
 
     result = report_to_dict(report)
 
-    # pipeline.analyze swallows RAG and LLM failures by design, so a partial
-    # report arrives looking like a complete one. Say which layers are
-    # missing, otherwise the model presents a degraded answer as a full one.
-    degraded: list[str] = []
-    if report.llm_analysis is None:
-        if not config.GROQ_API_KEY:
-            degraded.append(
-                "llm: skipped because GROQ_API_KEY is not set in the server's "
-                "environment, so there are no index suggestions and no "
-                "rewrite. The lint findings are complete; set the key and call "
-                "again for the LLM layer."
-            )
-        else:
-            degraded.append(
-                "llm: Groq was unreachable or returned an unusable response, "
-                "so there are no index suggestions and no rewrite. The lint "
-                "findings are complete. Retrying may succeed."
-            )
-    if not report.similar_cases:
-        degraded.append(
-            "similar_cases: no case cleared the similarity threshold, so the "
-            "knowledge base holds no real precedent for this query. This is a "
-            "genuine answer, not a failure -- do not substitute a weak match. "
-            "The lint findings and any LLM analysis are unaffected."
-        )
-
+    # The pipeline reports each layer's status itself, so this no longer
+    # guesses from which fields came back empty. That guessing was wrong in
+    # practice: a 404 from a bad model name was reported as "Groq was
+    # unreachable", when the service was reachable and had rejected the
+    # request. `degraded` is now a plain restatement of the layers that did
+    # not succeed, using the reason the layer itself gave.
+    degraded = [
+        f"{layer['name']}: {layer['status']} -- {layer['reason']}"
+        for layer in result["layers"]
+        if layer["status"] != "ok"
+    ]
     result["degraded"] = degraded
+
     logger.info(
-        "analyze_sql: %d finding(s), llm=%s, degraded=%d",
+        "analyze_sql: %d finding(s), final_risk=%s, layers=%s",
         len(report.lint_findings),
-        report.llm_analysis is not None,
-        len(degraded),
+        report.final_risk.value,
+        {layer["name"]: layer["status"] for layer in result["layers"]},
     )
     return result
 
