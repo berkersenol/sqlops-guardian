@@ -1,0 +1,188 @@
+{
+  "timestamp": "2026-10-07T09:50:41",
+  "n_cases": 32,
+  "overall": {
+    "precision": 0.8333333333333334,
+    "recall": 0.8333333333333334,
+    "f1": 0.8333333333333334,
+    "tp": 20,
+    "fp": 4,
+    "fn": 4
+  },
+  "per_rule": {
+    "DELETE_WITHOUT_WHERE": {
+      "tp": 1,
+      "fp": 1,
+      "fn": 2,
+      "precision": 0.5,
+      "recall": 0.3333333333333333
+    },
+    "DROP_TABLE": {
+      "tp": 2,
+      "fp": 1,
+      "fn": 0,
+      "precision": 0.6666666666666666,
+      "recall": 1.0
+    },
+    "FUNCTION_ON_COLUMN": {
+      "tp": 3,
+      "fp": 1,
+      "fn": 0,
+      "precision": 0.75,
+      "recall": 1.0
+    },
+    "LEADING_WILDCARD_LIKE": {
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "LEFT_JOIN_WHERE_TRAP": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.5
+    },
+    "MISSING_LIMIT": {
+      "tp": 3,
+      "fp": 1,
+      "fn": 0,
+      "precision": 0.75,
+      "recall": 1.0
+    },
+    "NOT_IN_SUBQUERY": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "OR_ACROSS_COLUMNS": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "SELECT_STAR": {
+      "tp": 4,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "UPDATE_WITHOUT_WHERE": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.5
+    }
+  },
+  "per_category": {
+    "clean": {
+      "total": 9,
+      "exact": 9,
+      "exact_match_rate": 1.0
+    },
+    "single": {
+      "total": 12,
+      "exact": 12,
+      "exact_match_rate": 1.0
+    },
+    "multi": {
+      "total": 3,
+      "exact": 3,
+      "exact_match_rate": 1.0
+    },
+    "tricky": {
+      "total": 8,
+      "exact": 0,
+      "exact_match_rate": 0.0
+    }
+  },
+  "mismatches": [
+    {
+      "id": "sql-in-string-literal",
+      "category": "tricky",
+      "query": "SELECT id FROM audit_log WHERE action = 'DELETE FROM users' LIMIT 10;",
+      "false_positives": [
+        "DELETE_WITHOUT_WHERE"
+      ],
+      "false_negatives": [],
+      "note": "Destructive SQL inside a string literal is data, not code"
+    },
+    {
+      "id": "drop-in-comment",
+      "category": "tricky",
+      "query": "-- DROP TABLE users\nSELECT id FROM users WHERE id = 1;",
+      "false_positives": [
+        "DROP_TABLE"
+      ],
+      "false_negatives": [],
+      "note": "Commented-out SQL never executes"
+    },
+    {
+      "id": "function-on-value-not-column",
+      "category": "tricky",
+      "query": "SELECT id FROM events WHERE created_at > DATE('2025-01-01') LIMIT 50;",
+      "false_positives": [
+        "FUNCTION_ON_COLUMN"
+      ],
+      "false_negatives": [],
+      "note": "Function wraps a constant, so the column stays index-friendly"
+    },
+    {
+      "id": "window-order-by",
+      "category": "tricky",
+      "query": "SELECT id, ROW_NUMBER() OVER (ORDER BY created_at) AS rn FROM events WHERE id < 100;",
+      "false_positives": [
+        "MISSING_LIMIT"
+      ],
+      "false_negatives": [],
+      "note": "ORDER BY inside a window function does not sort the result set"
+    },
+    {
+      "id": "left-join-with-as",
+      "category": "tricky",
+      "query": "SELECT u.id FROM users u LEFT JOIN orders AS o ON o.user_id = u.id WHERE o.status = 'paid';",
+      "false_positives": [],
+      "false_negatives": [
+        "LEFT_JOIN_WHERE_TRAP"
+      ],
+      "note": "Same trap, but the alias uses the AS keyword"
+    },
+    {
+      "id": "update-with-alias",
+      "category": "tricky",
+      "query": "UPDATE orders o SET status = 'archived';",
+      "false_positives": [],
+      "false_negatives": [
+        "UPDATE_WITHOUT_WHERE"
+      ],
+      "note": "Table alias between table name and SET"
+    },
+    {
+      "id": "multi-statement",
+      "category": "tricky",
+      "query": "DELETE FROM users; SELECT id FROM orders WHERE id = 1;",
+      "false_positives": [],
+      "false_negatives": [
+        "DELETE_WITHOUT_WHERE"
+      ],
+      "note": "WHERE belongs to a later statement, the DELETE still has none"
+    },
+    {
+      "id": "quoted-identifier",
+      "category": "tricky",
+      "query": "DELETE FROM \"user accounts\";",
+      "false_positives": [],
+      "false_negatives": [
+        "DELETE_WITHOUT_WHERE"
+      ],
+      "note": "Quoted table name with a space"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+[
+  {"id": "clean-simple-select", "category": "clean", "query": "SELECT id, name FROM users WHERE id = 5;", "expected_rules": []},
+  {"id": "clean-paginated", "category": "clean", "query": "SELECT id, total FROM orders ORDER BY created_at DESC LIMIT 20;", "expected_rules": []},
+  {"id": "clean-delete-with-where", "category": "clean", "query": "DELETE FROM sessions WHERE expires_at < NOW();", "expected_rules": []},
+  {"id": "clean-update-with-where", "category": "clean", "query": "UPDATE users SET active = false WHERE id = 7;", "expected_rules": []},
+  {"id": "clean-count-star", "category": "clean", "query": "SELECT COUNT(*) FROM orders;", "expected_rules": []},
+  {"id": "clean-insert", "category": "clean", "query": "INSERT INTO logs (msg) VALUES ('hello');", "expected_rules": []},
+  {"id": "clean-not-in-list", "category": "clean", "query": "SELECT id FROM orders WHERE status NOT IN ('cancelled', 'refunded') LIMIT 100;", "expected_rules": []},
+  {"id": "clean-or-same-column", "category": "clean", "query": "SELECT id FROM orders WHERE status = 'new' OR status = 'pending' LIMIT 100;", "expected_rules": []},
+  {"id": "clean-anti-join", "category": "clean", "query": "SELECT u.id FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE o.id IS NULL;", "expected_rules": [], "note": "IS NULL on the right table is the correct anti-join pattern, not a trap"},
+
+  {"id": "select-star", "category": "single", "query": "SELECT * FROM orders WHERE id = 1;", "expected_rules": ["SELECT_STAR"]},
+  {"id": "delete-no-where", "category": "single", "query": "DELETE FROM users;", "expected_rules": ["DELETE_WITHOUT_WHERE"]},
+  {"id": "update-no-where", "category": "single", "query": "UPDATE products SET price = 0;", "expected_rules": ["UPDATE_WITHOUT_WHERE"]},
+  {"id": "drop-table", "category": "single", "query": "DROP TABLE customers;", "expected_rules": ["DROP_TABLE"]},
+  {"id": "leading-wildcard", "category": "single", "query": "SELECT id FROM products WHERE name LIKE '%phone' LIMIT 10;", "expected_rules": ["LEADING_WILDCARD_LIKE"]},
+  {"id": "function-on-column", "category": "single", "query": "SELECT id FROM users WHERE LOWER(email) = 'a@b.com';", "expected_rules": ["FUNCTION_ON_COLUMN"]},
+  {"id": "order-without-limit", "category": "single", "query": "SELECT id, total FROM orders ORDER BY total DESC;", "expected_rules": ["MISSING_LIMIT"]},
+  {"id": "not-in-subquery", "category": "single", "query": "SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM banned);", "expected_rules": ["NOT_IN_SUBQUERY"]},
+  {"id": "or-across-columns", "category": "single", "query": "SELECT id FROM users WHERE email = 'x@y.com' OR phone = '123';", "expected_rules": ["OR_ACROSS_COLUMNS"]},
+  {"id": "left-join-trap", "category": "single", "query": "SELECT u.id, o.total FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE o.status = 'paid';", "expected_rules": ["LEFT_JOIN_WHERE_TRAP"]},
+  {"id": "drop-if-exists", "category": "single", "query": "DROP TABLE IF EXISTS temp_import;", "expected_rules": ["DROP_TABLE"]},
+  {"id": "ilike-wildcard", "category": "single", "query": "SELECT id FROM products WHERE name ILIKE '%phone' LIMIT 10;", "expected_rules": ["LEADING_WILDCARD_LIKE"]},
+
+  {"id": "seed-extract-star", "category": "multi", "query": "SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;", "expected_rules": ["FUNCTION_ON_COLUMN", "SELECT_STAR"]},
+  {"id": "star-wildcard-nolimit", "category": "multi", "query": "SELECT * FROM logs WHERE message LIKE '%error%' ORDER BY ts;", "expected_rules": ["SELECT_STAR", "LEADING_WILDCARD_LIKE", "MISSING_LIMIT"]},
+  {"id": "lowercase-multiline", "category": "multi", "query": "select *\nfrom orders\nwhere upper(status) = 'PAID'\norder by created_at;", "expected_rules": ["SELECT_STAR", "FUNCTION_ON_COLUMN", "MISSING_LIMIT"]},
+
+  {"id": "sql-in-string-literal", "category": "tricky", "query": "SELECT id FROM audit_log WHERE action = 'DELETE FROM users' LIMIT 10;", "expected_rules": [], "note": "Destructive SQL inside a string literal is data, not code"},
+  {"id": "drop-in-comment", "category": "tricky", "query": "-- DROP TABLE users\nSELECT id FROM users WHERE id = 1;", "expected_rules": [], "note": "Commented-out SQL never executes"},
+  {"id": "function-on-value-not-column", "category": "tricky", "query": "SELECT id FROM events WHERE created_at > DATE('2025-01-01') LIMIT 50;", "expected_rules": [], "note": "Function wraps a constant, so the column stays index-friendly"},
+  {"id": "window-order-by", "category": "tricky", "query": "SELECT id, ROW_NUMBER() OVER (ORDER BY created_at) AS rn FROM events WHERE id < 100;", "expected_rules": [], "note": "ORDER BY inside a window function does not sort the result set"},
+  {"id": "left-join-with-as", "category": "tricky", "query": "SELECT u.id FROM users u LEFT JOIN orders AS o ON o.user_id = u.id WHERE o.status = 'paid';", "expected_rules": ["LEFT_JOIN_WHERE_TRAP"], "note": "Same trap, but the alias uses the AS keyword"},
+  {"id": "update-with-alias", "category": "tricky", "query": "UPDATE orders o SET status = 'archived';", "expected_rules": ["UPDATE_WITHOUT_WHERE"], "note": "Table alias between table name and SET"},
+  {"id": "multi-statement", "category": "tricky", "query": "DELETE FROM users; SELECT id FROM orders WHERE id = 1;", "expected_rules": ["DELETE_WITHOUT_WHERE"], "note": "WHERE belongs to a later statement, the DELETE still has none"},
+  {"id": "quoted-identifier", "category": "tricky", "query": "DELETE FROM \"user accounts\";", "expected_rules": ["DELETE_WITHOUT_WHERE"], "note": "Quoted table name with a space"}
+]

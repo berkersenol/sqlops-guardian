@@ -185,6 +185,7 @@ sqlops-guardian/
 │   │   ├── models.py           # Pydantic models
 │   │   └── seed_cases.py       # Seed data loader
 │   ├── tests/                  # 99 pytest tests
+│   ├── evals/                  # Linter evaluation harness + golden set
 │   ├── cases/                  # Seed case data
 │   ├── samples/                # Example SQL files
 │   └── main.py                 # Entry point
@@ -232,6 +233,68 @@ uv run pytest tests/ -v
 99 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, and case store.
 The Groq client is mocked throughout, so the suite needs no API key and makes no network calls.
 Each test gets its own temporary SQLite file and ChromaDB directory, so runs never touch real data.
+
+---
+
+## Evaluation
+
+The deterministic linter is evaluated separately from the LLM. The linter is the
+only layer with a single correct answer — same query, same findings, every time —
+so it can be scored by exact comparison against labeled data. It is also the layer
+that still works when Groq is unreachable, so its score is a direct measurement of
+the system's worst-case behaviour.
+
+### The golden set
+
+`backend/evals/golden_linter.json` holds 32 hand-labeled queries in four categories:
+
+| Category | Cases | What it covers |
+|---|---|---|
+| `clean` | 9 | Queries that must produce **no** findings — paginated selects, `DELETE`/`UPDATE` with a `WHERE`, `COUNT(*)`, `NOT IN` over a literal list, `OR` on one column, and the correct `LEFT JOIN ... IS NULL` anti-join |
+| `single` | 12 | One rule each, covering all 10 rules plus `DROP TABLE IF EXISTS` and `ILIKE` variants |
+| `multi` | 3 | Queries that must trigger two or three rules at once |
+| `tricky` | 8 | Cases where the naive textual reading and the correct answer disagree: SQL inside a string literal or a comment, a function wrapping a constant instead of a column, `ORDER BY` inside a window function, `AS` aliases, a table alias in `UPDATE`, multi-statement input, and quoted identifiers |
+
+Scoring is per rule: **precision** ("when the linter speaks up, how often is it
+right?") and **recall** ("of the real problems, how many did it catch?"), plus an
+exact-match rate per category — a case counts only if the set of rules fired equals
+the labeled set exactly.
+
+### Running it
+
+```bash
+cd backend
+uv run python -m evals.eval_linter            # print the report, write evals/results/linter_latest.json
+uv run python -m evals.eval_linter --min-f1 0.8   # also exit 1 if overall F1 drops below 0.8
+```
+
+Results land in `backend/evals/results/`, which is gitignored apart from committed
+baselines so runs can be compared over time.
+
+### Baseline: regex linter
+
+`backend/evals/results/linter_baseline_regex.json`
+
+```
+Overall  precision 0.83  recall 0.83  F1 0.83   (TP 20, FP 4, FN 4)
+
+clean    9/9   (100%)
+single  12/12  (100%)
+multi    3/3   (100%)
+tricky   0/8   (0%)
+```
+
+The current regex implementation handles every straightforward case and **fails all
+eight tricky ones** — four false positives (it reads `DROP TABLE` in a comment and
+`DELETE FROM users` inside a string literal as real statements, flags a function on
+a constant, and counts a window function's `ORDER BY` as a missing `LIMIT`) and four
+misses (`LEFT JOIN orders AS o`, `UPDATE orders o SET`, a `DELETE` whose only `WHERE`
+belongs to a later statement, and a quoted table name).
+
+This is not a set of individual bugs. It is one root cause: the rules match text, so
+they have no way to know whether a token is code, a comment, a string, or which
+statement it belongs to. Fixing it needs a syntax tree, not more regex — which is what
+the eval exists to measure.
 
 ---
 
