@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests and linter eval
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Gate: the suite must pass.
+      - name: Run pytest
+        run: uv run pytest -q
+
+      # Report only: no --min-f1 threshold yet, so a regression in the linter
+      # eval shows up in the log and the summary without failing the build.
+      - name: Run linter eval (report only)
+        id: eval
+        # pipefail matters here: GitHub's default shell is `bash -e`, not
+        # `bash -eo pipefail`, so without it `tee` would mask a crash in the
+        # eval and the step would pass green. There is no --min-f1 threshold,
+        # so a metrics regression still does not fail the build -- but the
+        # eval failing to *run* does.
+        run: |
+          set -o pipefail
+          uv run python -m evals.eval_linter | tee eval_output.txt
+
+      - name: Add linter eval to job summary
+        if: always() && steps.eval.outcome != 'skipped'
+        run: |
+          {
+            echo '## Linter eval'
+            echo '```'
+            cat eval_output.txt || echo 'eval produced no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload eval result JSON
+        if: always() && steps.eval.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linter-eval-result
+          path: backend/evals/results/linter_latest.json
+          if-no-files-found: warn
