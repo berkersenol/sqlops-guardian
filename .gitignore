@@ -42,3 +42,11 @@ CLAUDE.md
 
 # Project prompt
 sqlops-guardian-full-prompt.md
+
+# Eval results — transient runs are ignored, the committed baselines are not.
+# Note: the glob must exclude the directory *contents*, not the directory
+# itself; git cannot re-include a file whose parent directory is excluded.
+backend/evals/results/*
+!backend/evals/results/linter_baseline_regex.json
+!backend/evals/results/linter_sqlglot.json
+!backend/evals/results/linter_holdout.json

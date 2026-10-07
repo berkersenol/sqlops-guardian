@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests and linter eval
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # The test suite seeds ChromaDB, whose default embedding function
+      # downloads the all-MiniLM-L6-v2 ONNX model (~80MB) to
+      # ~/.cache/chroma/onnx_models/ on first use. Without this the download
+      # happens on every run; the model is a fixed artifact, so a hit makes
+      # the seeding step purely local.
+      - name: Cache ChromaDB embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/chroma
+          # Keyed on the lock file so a chromadb upgrade that changes the
+          # bundled model name re-downloads, with a fallback to any existing
+          # cache since the model rarely changes between versions.
+          key: chroma-model-${{ runner.os }}-${{ hashFiles('backend/uv.lock') }}
+          restore-keys: |
+            chroma-model-${{ runner.os }}-
+
+      # Gate: the suite must pass.
+      - name: Run pytest
+        run: uv run pytest -q
+
+      # Gate: the main golden set must stay at or above F1 0.95. The linter
+      # currently scores 1.00 there, so this catches a real regression while
+      # leaving room for a single borderline case.
+      - name: Run linter eval -- main set (gated at F1 0.95)
+        id: eval
+        # pipefail matters here: GitHub's default shell is `bash -e`, not
+        # `bash -eo pipefail`, so without it `tee` would mask the eval's exit
+        # code -- both a threshold breach and an outright crash -- and the
+        # step would pass green.
+        run: |
+          set -o pipefail
+          uv run python -m evals.eval_linter --min-f1 0.95 | tee eval_output.txt
+
+      # Report only: the held-out set is written independently of the linter,
+      # so it is a generalisation check rather than a gate. A drop here is
+      # worth seeing but should not block a merge on its own. `if: always()`
+      # so it still runs when the gated main-set step above fails.
+      - name: Run linter eval -- held-out set (report only)
+        id: eval_holdout
+        if: always() && steps.eval.outcome != 'skipped'
+        run: |
+          set -o pipefail
+          uv run python -m evals.eval_linter             --golden evals/golden_linter_holdout.json | tee eval_holdout_output.txt
+
+      - name: Add linter eval to job summary
+        if: always() && steps.eval.outcome != 'skipped'
+        run: |
+          {
+            echo '## Linter eval -- main set (gated, F1 >= 0.95)'
+            echo '```'
+            cat eval_output.txt || echo 'eval produced no output'
+            echo '```'
+            echo '## Linter eval -- held-out set (report only)'
+            echo '```'
+            cat eval_holdout_output.txt || echo 'held-out eval produced no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload eval result JSON
+        if: always() && steps.eval.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linter-eval-result
+          path: |
+            backend/evals/results/linter_latest.json
+            backend/evals/results/linter_latest_holdout.json
+          if-no-files-found: warn

@@ -1,129 +1,124 @@
 """
 Tests for case_store.py — SQLite logging layer.
-Run: uv run python -m pytest tests/test_case_store.py
+
+Converted from a hand-rolled script; every original check is preserved as an
+assert. The `db_path` fixture gives each test its own database file, so these
+no longer depend on running in order or on cleaning up ./test_sqlops.db.
 """
 
-import os
 import json
-from datetime import datetime
-from app.models import AnalysisReport, LintFinding, Severity
 
-# Override DB path BEFORE importing case_store so it uses a temp file
-os.environ["SQLITE_DB_PATH"] = "./test_sqlops.db"
+import pytest
 
-from app.case_store import init_db, log_analysis, log_feedback, get_recent_analyses, get_metrics
-
-# Colors
-GREEN = "\033[92m"
-RED = "\033[91m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+from app.case_store import (
+    get_metrics,
+    get_recent_analyses,
+    init_db,
+    log_analysis,
+    log_feedback,
+)
+from app.models import LintFinding, Severity
 
 
-def make_report(query="SELECT * FROM users;", rules=None):
-    """Helper to create a test AnalysisReport."""
-    if rules is None:
-        rules = [
-            LintFinding(
-                rule_name="SELECT_STAR",
-                severity=Severity.MEDIUM,
-                description="Returns all columns",
-                suggestion="List specific columns",
-            )
-        ]
-    worst = max(rules, key=lambda f: list(Severity).index(f.severity)) if rules else None
-    return AnalysisReport(
-        query=query,
-        timestamp=datetime.now(),
-        lint_findings=rules,
-        overall_severity=worst.severity if worst else Severity.LOW,
-        summary=f"{len(rules)} issue(s) found",
-    )
+def test_init_db_creates_table(db_path):
+    # db_path already called init_db(); a query against the table must work.
+    assert get_recent_analyses(limit=1) == []
 
 
-def cleanup():
-    """Remove test database."""
-    if os.path.exists("./test_sqlops.db"):
-        os.remove("./test_sqlops.db")
-
-
-def run_tests():
-    passed = 0
-    failed = 0
-
-    def check(name, condition):
-        nonlocal passed, failed
-        if condition:
-            print(f"  {GREEN}PASS{RESET} {name}")
-            passed += 1
-        else:
-            print(f"  {RED}FAIL{RESET} {name}")
-            failed += 1
-
-    cleanup()
-
-    print(f"\n{BOLD}Case Store Tests{RESET}\n")
-
-    # Test 1: init_db creates table without error
+def test_init_db_is_idempotent(db_path):
     init_db()
-    check("init_db creates table", True)
-
-    # Test 2: init_db is idempotent
     init_db()
-    check("init_db is idempotent", True)
+    assert get_recent_analyses(limit=1) == []
 
-    # Test 3: log_analysis returns an id
-    report = make_report()
-    row_id = log_analysis(report, response_time_ms=42)
-    check("log_analysis returns id", row_id == 1)
 
-    # Test 4: get_recent_analyses returns the logged row
-    rows = get_recent_analyses(limit=10)
-    check("get_recent_analyses returns 1 row", len(rows) == 1)
+def test_log_analysis_returns_first_row_id(db_path, make_report):
+    assert log_analysis(make_report(), response_time_ms=42) == 1
 
-    # Test 5: stored data is correct
-    row = rows[0]
+
+def test_get_recent_analyses_returns_logged_row(db_path, make_report):
+    log_analysis(make_report(), response_time_ms=42)
+    assert len(get_recent_analyses(limit=10)) == 1
+
+
+def test_stored_fields_round_trip(db_path, make_report):
+    log_analysis(make_report(), response_time_ms=42)
+    row = get_recent_analyses(limit=10)[0]
     findings = json.loads(row["lint_findings"])
-    check("stored query matches", row["query"] == "SELECT * FROM users;")
-    check("stored severity matches", row["overall_severity"] == "MEDIUM")
-    check("stored findings are valid JSON", findings[0]["rule_name"] == "SELECT_STAR")
-    check("response_time_ms stored", row["response_time_ms"] == 42)
 
-    # Test 6: feedback is null before update
-    check("feedback initially null", row["feedback_accepted"] is None)
+    assert row["query"] == "SELECT * FROM users;"
+    assert row["overall_severity"] == "MEDIUM"
+    assert findings[0]["rule_name"] == "SELECT_STAR"
+    assert row["response_time_ms"] == 42
 
-    # Test 7: log_feedback updates the row
+
+def test_feedback_is_null_before_update(db_path, make_report):
+    log_analysis(make_report())
+    assert get_recent_analyses(limit=10)[0]["feedback_accepted"] is None
+
+
+def test_log_feedback_updates_row(db_path, make_report):
+    row_id = log_analysis(make_report())
     log_feedback(row_id, accepted=True, comments="Good catch")
-    rows = get_recent_analyses(limit=10)
-    check("feedback_accepted updated", rows[0]["feedback_accepted"] == 1)
-    check("feedback_comments updated", rows[0]["feedback_comments"] == "Good catch")
 
-    # Test 8: log multiple analyses, check ordering
-    report2 = make_report("DELETE FROM orders;", [
-        LintFinding("DELETE_WITHOUT_WHERE", Severity.CRITICAL,
-                     "Deletes all rows", "Add WHERE clause")
-    ])
-    id2 = log_analysis(report2)
-    rows = get_recent_analyses(limit=10)
-    check("most recent analysis first", rows[0]["id"] == id2)
-
-    # Test 9: get_metrics
-    metrics = get_metrics()
-    check("total_analyses is 2", metrics["total_analyses"] == 2)
-    check("most_common_severity present", metrics["most_common_severity"] is not None)
-    check("most_common_rule present", metrics["most_common_rule"] is not None)
-    check("acceptance_rate is 1.0", metrics["acceptance_rate"] == 1.0)
-    check("rule_counts has entries", len(metrics["rule_counts"]) == 2)
-
-    # Cleanup
-    cleanup()
-
-    print(f"\n{'-'*40}")
-    print(f"  {GREEN}Passed: {passed}{RESET}  {RED}Failed: {failed}{RESET}")
-    print(f"{'-'*40}\n")
-
-    return failed == 0
+    row = get_recent_analyses(limit=10)[0]
+    assert row["feedback_accepted"] == 1
+    assert row["feedback_comments"] == "Good catch"
 
 
-if __name__ == "__main__":
-    run_tests()
+def test_most_recent_analysis_comes_first(db_path, make_report):
+    log_analysis(make_report())
+    second = log_analysis(
+        make_report(
+            "DELETE FROM orders;",
+            [
+                LintFinding(
+                    "DELETE_WITHOUT_WHERE",
+                    Severity.CRITICAL,
+                    "Deletes all rows",
+                    "Add WHERE clause",
+                )
+            ],
+        )
+    )
+    assert get_recent_analyses(limit=10)[0]["id"] == second
+
+
+@pytest.fixture
+def two_logged_analyses(db_path, make_report):
+    """The original script's end state: two analyses, the first one accepted."""
+    first = log_analysis(make_report(), response_time_ms=42)
+    log_feedback(first, accepted=True, comments="Good catch")
+    log_analysis(
+        make_report(
+            "DELETE FROM orders;",
+            [
+                LintFinding(
+                    "DELETE_WITHOUT_WHERE",
+                    Severity.CRITICAL,
+                    "Deletes all rows",
+                    "Add WHERE clause",
+                )
+            ],
+        )
+    )
+    return get_metrics()
+
+
+def test_metrics_total_analyses(two_logged_analyses):
+    assert two_logged_analyses["total_analyses"] == 2
+
+
+def test_metrics_most_common_severity_present(two_logged_analyses):
+    assert two_logged_analyses["most_common_severity"] is not None
+
+
+def test_metrics_most_common_rule_present(two_logged_analyses):
+    assert two_logged_analyses["most_common_rule"] is not None
+
+
+def test_metrics_acceptance_rate(two_logged_analyses):
+    assert two_logged_analyses["acceptance_rate"] == 1.0
+
+
+def test_metrics_rule_counts_has_entries(two_logged_analyses):
+    assert len(two_logged_analyses["rule_counts"]) == 2

@@ -1,0 +1,15 @@
+[
+  {"id": "ho-cte-outer-star", "category": "holdout", "query": "WITH recent AS (SELECT id FROM orders WHERE created_at > '2025-01-01') SELECT * FROM recent;", "expected_rules": ["SELECT_STAR"], "note": "Star in the outer query of a CTE is still top-level"},
+  {"id": "ho-exists-subquery-star", "category": "holdout", "query": "SELECT id FROM orders o WHERE EXISTS (SELECT * FROM users u WHERE u.id = o.user_id) LIMIT 10;", "expected_rules": [], "note": "SELECT * inside EXISTS is a harmless idiom and not top-level"},
+  {"id": "ho-update-where-in-subquery", "category": "holdout", "query": "UPDATE orders SET status = 'archived' WHERE id IN (SELECT order_id FROM archive_queue);", "expected_rules": [], "note": "UPDATE has a real WHERE clause"},
+  {"id": "ho-interval-arithmetic", "category": "holdout", "query": "SELECT name FROM users WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' LIMIT 10;", "expected_rules": [], "note": "Function and arithmetic on the value side only; column stays index-friendly"},
+  {"id": "ho-trim-on-column", "category": "holdout", "query": "SELECT id FROM users WHERE TRIM(name) = 'bob' LIMIT 5;", "expected_rules": ["FUNCTION_ON_COLUMN"], "note": "TRIM was not in the old regex function list; tests that the rule generalises"},
+  {"id": "ho-block-comment-drop", "category": "holdout", "query": "/* cleanup */ DROP TABLE IF EXISTS staging_orders;", "expected_rules": ["DROP_TABLE"], "note": "Real DROP after a block comment must still fire"},
+  {"id": "ho-trailing-wildcard", "category": "holdout", "query": "SELECT id FROM docs WHERE title LIKE 'report%' LIMIT 10;", "expected_rules": [], "note": "Trailing wildcard can use a B-tree index"},
+  {"id": "ho-left-join-condition-in-on", "category": "holdout", "query": "SELECT u.id, o.total FROM users u LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'paid';", "expected_rules": [], "note": "Filter in ON is the correct fix for the LEFT JOIN trap, not the trap itself"},
+  {"id": "ho-or-qualified-columns", "category": "holdout", "query": "SELECT a.id FROM accounts a WHERE a.email = 'x@y.com' OR a.phone = '123' LIMIT 10;", "expected_rules": ["OR_ACROSS_COLUMNS"], "note": "Different columns, both qualified with the same alias"},
+  {"id": "ho-limit-offset", "category": "holdout", "query": "SELECT id FROM orders ORDER BY id LIMIT 10 OFFSET 20;", "expected_rules": [], "note": "Paginated query with OFFSET"},
+  {"id": "ho-where-only-in-comment", "category": "holdout", "query": "UPDATE users SET last_seen = NOW() -- WHERE id = 5", "expected_rules": ["UPDATE_WITHOUT_WHERE"], "note": "The only WHERE is commented out, so every row is updated"},
+  {"id": "ho-star-inside-string", "category": "holdout", "query": "SELECT 'SELECT * FROM users' AS example FROM docs LIMIT 1;", "expected_rules": [], "note": "SELECT * appears only inside a string literal"},
+  {"id": "ho-join-multi-issue", "category": "holdout", "query": "select * from orders o join users u on u.id = o.user_id where lower(u.email) = 'a@b.com' order by o.created_at desc", "expected_rules": ["SELECT_STAR", "FUNCTION_ON_COLUMN", "MISSING_LIMIT"], "note": "Lowercase, inner join, three issues at once"}
+]

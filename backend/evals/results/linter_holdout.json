@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-10-07T10:15:11",
+  "golden_set": "golden_linter_holdout.json",
+  "n_cases": 13,
+  "overall": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "tp": 8,
+    "fp": 0,
+    "fn": 0
+  },
+  "per_rule": {
+    "DROP_TABLE": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "FUNCTION_ON_COLUMN": {
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "MISSING_LIMIT": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "OR_ACROSS_COLUMNS": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "SELECT_STAR": {
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "UPDATE_WITHOUT_WHERE": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  },
+  "per_category": {
+    "holdout": {
+      "total": 13,
+      "exact": 13,
+      "exact_match_rate": 1.0
+    }
+  },
+  "mismatches": []
+}

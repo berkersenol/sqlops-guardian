@@ -1,154 +1,213 @@
 """
 Tests for api.py — FastAPI REST endpoints.
-Run: uv run python -m pytest tests/test_api.py
+
+Converted from a hand-rolled script. As in the original, pipeline.init() is run
+by a fixture and the TestClient is built without entering its context manager,
+so the app's lifespan (which would re-run init) does not fire again.
+
+The original relied on earlier requests having populated the database — the
+/feedback block reused whatever /analyze had just logged. Each test here issues
+the requests it depends on, against its own SQLite file.
 """
 
-import os
-import sys
+import pytest
 
-# Use a test database
-os.environ["SQLITE_DB_PATH"] = "./test_api.db"
-
-from app import config as config_mod
-config_mod.config.SQLITE_DB_PATH = "./test_api.db"
-
-from fastapi.testclient import TestClient
-
-# Colors
-GREEN = "\033[92m"
-RED = "\033[91m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+from tests.conftest import _point_chroma, _reset_rag_globals
 
 
-def run_tests():
-    # Clean up from previous runs
-    for f in ("./test_api.db",):
-        if os.path.exists(f):
-            os.remove(f)
+@pytest.fixture(scope="module")
+def _initialized(tmp_path_factory):
+    """Seed Chroma once for the whole module."""
+    from app import config as config_mod, pipeline
 
-    # Initialize pipeline before creating client
-    from app import pipeline
-    pipeline.init()
+    chroma_dir = tmp_path_factory.mktemp("api_chroma")
+    db_file = tmp_path_factory.mktemp("api_db") / "api.db"
 
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(config_mod.config, "SQLITE_DB_PATH", str(db_file))
+        mp.setattr(config_mod.config, "CHROMA_PERSIST_DIR", str(chroma_dir))
+        _reset_rag_globals()
+        pipeline.init()
+
+    _reset_rag_globals()
+    return chroma_dir
+
+
+@pytest.fixture
+def client(_initialized, tmp_path, monkeypatch, no_llm):
+    from fastapi.testclient import TestClient
+
+    from app import config as config_mod
     from app.api import app
-    client = TestClient(app, raise_server_exceptions=False)
+    from app.case_store import init_db
 
-    passed = 0
-    failed = 0
+    monkeypatch.setattr(config_mod.config, "SQLITE_DB_PATH", str(tmp_path / "api.db"))
+    _point_chroma(monkeypatch, _initialized)
+    init_db()
 
-    def check(name, condition):
-        nonlocal passed, failed
-        if condition:
-            print(f"  {GREEN}PASS{RESET} {name}")
-            passed += 1
-        else:
-            print(f"  {RED}FAIL{RESET} {name}")
-            failed += 1
-
-    print(f"\n{BOLD}API Tests{RESET}\n")
-
-    # --- POST /analyze ---
-    print(f"{BOLD}POST /analyze{RESET}")
-    resp = client.post("/analyze", json={"query": "SELECT * FROM users;"})
-    check("returns 200", resp.status_code == 200)
-    data = resp.json()
-    check("has lint_findings", len(data["lint_findings"]) > 0)
-    check("detects SELECT_STAR", any(f["rule_name"] == "SELECT_STAR" for f in data["lint_findings"]))
-    check("has overall_severity", "overall_severity" in data)
-    check("has summary", "summary" in data)
-    check("has response_time_ms", "response_time_ms" in data)
-    check("has similar_cases list", isinstance(data.get("similar_cases"), list))
-
-    # Analyze a clean query
-    resp2 = client.post("/analyze", json={"query": "SELECT id, name FROM users WHERE id = 1 LIMIT 10;"})
-    check("clean query returns 200", resp2.status_code == 200)
-    data2 = resp2.json()
-    check("clean query has 0 findings", len(data2["lint_findings"]) == 0)
-
-    # Missing body
-    resp3 = client.post("/analyze", json={})
-    check("missing query returns 422", resp3.status_code == 422)
-
-    # --- POST /feedback ---
-    print(f"\n{BOLD}POST /feedback{RESET}")
-
-    # First get a valid analysis_id from recent
-    recent_resp = client.get("/recent?limit=1")
-    analysis_id = recent_resp.json()[0]["id"]
-
-    resp4 = client.post("/feedback", json={
-        "analysis_id": analysis_id,
-        "accepted": True,
-        "comments": "good suggestion"
-    })
-    check("feedback returns 200", resp4.status_code == 200)
-    check("feedback status is ok", resp4.json()["status"] == "ok")
-
-    # Feedback with accepted=False
-    resp5 = client.post("/feedback", json={
-        "analysis_id": analysis_id,
-        "accepted": False,
-        "comments": "not helpful"
-    })
-    check("rejected feedback returns 200", resp5.status_code == 200)
-
-    # Missing fields
-    resp6 = client.post("/feedback", json={"analysis_id": 1})
-    check("missing accepted returns 422", resp6.status_code == 422)
-
-    # --- GET /metrics ---
-    print(f"\n{BOLD}GET /metrics{RESET}")
-    resp7 = client.get("/metrics")
-    check("metrics returns 200", resp7.status_code == 200)
-    metrics = resp7.json()
-    check("has total_analyses", "total_analyses" in metrics)
-    check("total_analyses >= 2", metrics["total_analyses"] >= 2)
-    check("has acceptance_rate", "acceptance_rate" in metrics)
-    check("has rule_counts", "rule_counts" in metrics)
-
-    # --- GET /recent ---
-    print(f"\n{BOLD}GET /recent{RESET}")
-    resp8 = client.get("/recent")
-    check("recent returns 200", resp8.status_code == 200)
-    recent = resp8.json()
-    check("recent is a list", isinstance(recent, list))
-    check("recent has entries", len(recent) > 0)
-    check("entries have id", "id" in recent[0])
-    check("entries have query", "query" in recent[0])
-
-    # With limit param
-    resp9 = client.get("/recent?limit=1")
-    check("limit=1 returns 1 entry", len(resp9.json()) == 1)
-
-    # Invalid limit
-    resp10 = client.get("/recent?limit=0")
-    check("limit=0 returns 422", resp10.status_code == 422)
-
-    # --- GET /health ---
-    print(f"\n{BOLD}GET /health{RESET}")
-    resp11 = client.get("/health")
-    check("health returns 200", resp11.status_code == 200)
-    health = resp11.json()
-    check("status is healthy", health["status"] == "healthy")
-    check("has rag_cases", "rag_cases" in health)
-    check("rag_cases >= 0", health["rag_cases"] >= 0)
-    check("db is connected", health["db"] == "connected")
-
-    # --- Summary ---
-    print(f"\n{'-'*40}")
-    print(f"  {GREEN}Passed: {passed}{RESET}  {RED}Failed: {failed}{RESET}")
-    print(f"{'-'*40}\n")
-
-    # Cleanup
-    try:
-        os.remove("./test_api.db")
-    except OSError:
-        pass
-
-    return failed == 0
+    yield TestClient(app, raise_server_exceptions=False)
+    _reset_rag_globals()
 
 
-if __name__ == "__main__":
-    success = run_tests()
-    sys.exit(0 if success else 1)
+# --------------------------------------------------------------------------
+# POST /analyze
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def analyze_response(client):
+    return client.post("/analyze", json={"query": "SELECT * FROM users;"})
+
+
+def test_analyze_returns_200(analyze_response):
+    assert analyze_response.status_code == 200
+
+
+def test_analyze_has_lint_findings(analyze_response):
+    assert len(analyze_response.json()["lint_findings"]) > 0
+
+
+def test_analyze_detects_select_star(analyze_response):
+    findings = analyze_response.json()["lint_findings"]
+    assert any(f["rule_name"] == "SELECT_STAR" for f in findings)
+
+
+@pytest.mark.parametrize(
+    "field", ["overall_severity", "summary", "response_time_ms"]
+)
+def test_analyze_response_contains_field(analyze_response, field):
+    assert field in analyze_response.json()
+
+
+def test_analyze_has_similar_cases_list(analyze_response):
+    assert isinstance(analyze_response.json().get("similar_cases"), list)
+
+
+def test_analyze_clean_query_returns_200_with_no_findings(client):
+    resp = client.post(
+        "/analyze", json={"query": "SELECT id, name FROM users WHERE id = 1 LIMIT 10;"}
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["lint_findings"]) == 0
+
+
+def test_analyze_missing_query_returns_422(client):
+    assert client.post("/analyze", json={}).status_code == 422
+
+
+# --------------------------------------------------------------------------
+# POST /feedback
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def analysis_id(client):
+    client.post("/analyze", json={"query": "SELECT * FROM users;"})
+    return client.get("/recent?limit=1").json()[0]["id"]
+
+
+def test_feedback_returns_200_and_ok_status(client, analysis_id):
+    resp = client.post(
+        "/feedback",
+        json={"analysis_id": analysis_id, "accepted": True, "comments": "good suggestion"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+def test_rejected_feedback_returns_200(client, analysis_id):
+    resp = client.post(
+        "/feedback",
+        json={"analysis_id": analysis_id, "accepted": False, "comments": "not helpful"},
+    )
+    assert resp.status_code == 200
+
+
+def test_feedback_missing_accepted_returns_422(client):
+    assert client.post("/feedback", json={"analysis_id": 1}).status_code == 422
+
+
+# --------------------------------------------------------------------------
+# GET /metrics
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def metrics(client):
+    client.post("/analyze", json={"query": "SELECT * FROM users;"})
+    client.post("/analyze", json={"query": "DELETE FROM users;"})
+    return client.get("/metrics")
+
+
+def test_metrics_returns_200(metrics):
+    assert metrics.status_code == 200
+
+
+def test_metrics_reports_total_analyses(metrics):
+    body = metrics.json()
+    assert "total_analyses" in body
+    assert body["total_analyses"] >= 2
+
+
+@pytest.mark.parametrize("field", ["acceptance_rate", "rule_counts"])
+def test_metrics_contains_field(metrics, field):
+    assert field in metrics.json()
+
+
+# --------------------------------------------------------------------------
+# GET /recent
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def recent(client):
+    client.post("/analyze", json={"query": "SELECT * FROM users;"})
+    return client.get("/recent")
+
+
+def test_recent_returns_200(recent):
+    assert recent.status_code == 200
+
+
+def test_recent_is_a_list_with_entries(recent):
+    body = recent.json()
+    assert isinstance(body, list)
+    assert len(body) > 0
+
+
+@pytest.mark.parametrize("field", ["id", "query"])
+def test_recent_entries_contain_field(recent, field):
+    assert field in recent.json()[0]
+
+
+def test_recent_limit_is_respected(client):
+    client.post("/analyze", json={"query": "SELECT * FROM users;"})
+    client.post("/analyze", json={"query": "DELETE FROM users;"})
+    assert len(client.get("/recent?limit=1").json()) == 1
+
+
+def test_recent_limit_zero_returns_422(client):
+    assert client.get("/recent?limit=0").status_code == 422
+
+
+# --------------------------------------------------------------------------
+# GET /health
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def health(client):
+    return client.get("/health")
+
+
+def test_health_returns_200(health):
+    assert health.status_code == 200
+
+
+def test_health_status_is_healthy(health):
+    assert health.json()["status"] == "healthy"
+
+
+def test_health_reports_rag_cases(health):
+    body = health.json()
+    assert "rag_cases" in body
+    assert body["rag_cases"] >= 0
+
+
+def test_health_reports_db_connected(health):
+    assert health.json()["db"] == "connected"

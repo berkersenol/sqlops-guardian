@@ -1,110 +1,220 @@
 """
 Tests for pipeline.py — full analysis pipeline.
-Run: uv run python -m pytest tests/test_pipeline.py
+
+Converted from a hand-rolled script. Changes worth knowing:
+
+- The original wrote ./test_pipeline.db into the repo and let state accumulate
+  across its numbered steps (step 5 asserted ">= 2 rows" because steps 2-4 had
+  already run). Each test here sets up exactly the rows it asserts on.
+- pipeline.init() seeds 15 Chroma cases, which dominates runtime, so it runs
+  once per module and the seeded directory is shared.
+- The LLM is pinned per test (`no_llm` or `mock_groq`) instead of depending on
+  whether a GROQ_API_KEY happened to be present in the environment.
 """
 
-import os
-import sys
-
-# Use a test database so we don't pollute the real one
-os.environ["SQLITE_DB_PATH"] = "./test_pipeline.db"
-
-from app import config as config_mod
-config_mod.config.SQLITE_DB_PATH = "./test_pipeline.db"
+import pytest
 
 from app.models import Severity
-
-# Colors
-GREEN = "\033[92m"
-RED = "\033[91m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+from tests.conftest import _point_chroma, _reset_rag_globals
 
 
-def run_tests():
-    passed = 0
-    failed = 0
+@pytest.fixture(scope="module")
+def _initialized(tmp_path_factory):
+    """Run pipeline.init() once; returns (chroma_dir, seeded_case_count)."""
+    from app import config as config_mod, pipeline
+    from app.rag import get_case_count
 
-    def check(name, condition):
-        nonlocal passed, failed
-        if condition:
-            print(f"  {GREEN}PASS{RESET} {name}")
-            passed += 1
-        else:
-            print(f"  {RED}FAIL{RESET} {name}")
-            failed += 1
+    chroma_dir = tmp_path_factory.mktemp("pipeline_chroma")
+    db_file = tmp_path_factory.mktemp("pipeline_db") / "pipeline.db"
 
-    print(f"\n{BOLD}Pipeline Tests{RESET}\n")
-
-    # Clean up test DB from previous runs
-    if os.path.exists("./test_pipeline.db"):
-        os.remove("./test_pipeline.db")
-
-    # --- Test 1: init() runs without error ---
-    from app import pipeline
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(config_mod.config, "SQLITE_DB_PATH", str(db_file))
+        mp.setattr(config_mod.config, "CHROMA_PERSIST_DIR", str(chroma_dir))
+        _reset_rag_globals()
         pipeline.init()
-        check("init() runs without error", True)
-    except Exception as e:
-        check(f"init() runs without error (got: {e})", False)
+        count = get_case_count()
 
-    # --- Test 2: Full pipeline with a problematic query ---
-    report = pipeline.analyze("SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;")
-    check("analyze returns AnalysisReport", report is not None)
-    check("report has lint_findings", len(report.lint_findings) > 0)
-    check("report detects SELECT_STAR", any(f.rule_name == "SELECT_STAR" for f in report.lint_findings))
-    check("report detects FUNCTION_ON_COLUMN", any(f.rule_name == "FUNCTION_ON_COLUMN" for f in report.lint_findings))
-    check("overall_severity is HIGH or above", report.overall_severity in (Severity.CRITICAL, Severity.HIGH))
-    check("report has response_time_ms", report.response_time_ms >= 0)
-    check("report has tokens_used field", hasattr(report, "tokens_used"))
-    check("similar_cases is a list", isinstance(report.similar_cases, list))
+    _reset_rag_globals()
+    return chroma_dir, count
 
-    # --- Test 3: Clean query ---
-    clean = pipeline.analyze("SELECT id, name FROM customers WHERE id = 1 LIMIT 10;")
-    check("clean query has 0 findings", len(clean.lint_findings) == 0)
-    check("clean query severity is LOW", clean.overall_severity == Severity.LOW)
-    check("clean query summary says clean", "clean" in clean.summary.lower() or "no anti" in clean.summary.lower())
 
-    # --- Test 4: Pipeline works with LLM unavailable (graceful degradation) ---
-    saved_key = config_mod.config.GROQ_API_KEY
-    config_mod.config.GROQ_API_KEY = ""
-    report_no_llm = pipeline.analyze("DELETE FROM users;")
-    check("works without LLM (no API key)", report_no_llm is not None)
-    check("still detects DELETE_WITHOUT_WHERE", any(f.rule_name == "DELETE_WITHOUT_WHERE" for f in report_no_llm.lint_findings))
-    check("llm_analysis is None without key", report_no_llm.llm_analysis is None)
-    config_mod.config.GROQ_API_KEY = saved_key
+@pytest.fixture
+def env(_initialized, tmp_path, monkeypatch, no_llm):
+    """Fresh SQLite per test; the seeded Chroma directory is shared."""
+    from app import config as config_mod
+    from app.case_store import init_db
 
-    # --- Test 5: Results logged to SQLite ---
+    chroma_dir, _ = _initialized
+    monkeypatch.setattr(config_mod.config, "SQLITE_DB_PATH", str(tmp_path / "pipeline.db"))
+    _point_chroma(monkeypatch, chroma_dir)
+    init_db()
+    yield
+    _reset_rag_globals()
+
+
+# --------------------------------------------------------------------------
+# init()
+# --------------------------------------------------------------------------
+
+def test_init_runs_without_error_and_seeds_cases(_initialized):
+    _, count = _initialized
+    assert count == 15
+
+
+# --------------------------------------------------------------------------
+# A query with real problems
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def problem_report(env):
+    from app import pipeline
+    return pipeline.analyze(
+        "SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;"
+    )
+
+
+def test_analyze_returns_a_report(problem_report):
+    assert problem_report is not None
+
+
+def test_report_has_lint_findings(problem_report):
+    assert len(problem_report.lint_findings) > 0
+
+
+def test_report_detects_select_star(problem_report):
+    assert any(f.rule_name == "SELECT_STAR" for f in problem_report.lint_findings)
+
+
+def test_report_detects_function_on_column(problem_report):
+    assert any(f.rule_name == "FUNCTION_ON_COLUMN" for f in problem_report.lint_findings)
+
+
+def test_overall_severity_is_high_or_above(problem_report):
+    assert problem_report.overall_severity in (Severity.CRITICAL, Severity.HIGH)
+
+
+def test_report_has_response_time(problem_report):
+    assert problem_report.response_time_ms >= 0
+
+
+def test_report_has_tokens_used_field(problem_report):
+    assert hasattr(problem_report, "tokens_used")
+
+
+def test_similar_cases_is_a_list(problem_report):
+    assert isinstance(problem_report.similar_cases, list)
+
+
+def test_report_fields_are_populated(problem_report):
+    assert len(problem_report.query) > 0
+    assert problem_report.timestamp is not None
+    assert len(problem_report.summary) > 0
+
+
+# --------------------------------------------------------------------------
+# A clean query
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def clean_report(env):
+    from app import pipeline
+    return pipeline.analyze("SELECT id, name FROM customers WHERE id = 1 LIMIT 10;")
+
+
+def test_clean_query_has_no_findings(clean_report):
+    assert len(clean_report.lint_findings) == 0
+
+
+def test_clean_query_severity_is_low(clean_report):
+    assert clean_report.overall_severity == Severity.LOW
+
+
+def test_clean_query_summary_says_clean(clean_report):
+    summary = clean_report.summary.lower()
+    assert "clean" in summary or "no anti" in summary
+
+
+# --------------------------------------------------------------------------
+# Graceful degradation with no LLM
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def delete_report(env):
+    """`env` already pins GROQ_API_KEY to empty via the no_llm fixture."""
+    from app import pipeline
+    return pipeline.analyze("DELETE FROM users;")
+
+
+def test_works_without_an_llm(delete_report):
+    assert delete_report is not None
+
+
+def test_still_detects_delete_without_where(delete_report):
+    assert any(f.rule_name == "DELETE_WITHOUT_WHERE" for f in delete_report.lint_findings)
+
+
+def test_llm_analysis_is_none_without_a_key(delete_report):
+    assert delete_report.llm_analysis is None
+
+
+# --------------------------------------------------------------------------
+# UPDATE without WHERE
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def update_report(env):
+    from app import pipeline
+    return pipeline.analyze("UPDATE customers SET status = 'inactive';")
+
+
+def test_works_with_update_without_where(update_report):
+    assert update_report is not None
+
+
+def test_detects_update_without_where(update_report):
+    assert any(f.rule_name == "UPDATE_WITHOUT_WHERE" for f in update_report.lint_findings)
+
+
+def test_update_without_where_is_critical(update_report):
+    assert update_report.overall_severity == Severity.CRITICAL
+
+
+# --------------------------------------------------------------------------
+# SQLite logging
+# --------------------------------------------------------------------------
+
+def test_analyses_are_logged_to_sqlite(env):
+    from app import pipeline
     from app.case_store import get_recent_analyses
+
+    pipeline.analyze("SELECT * FROM orders;")
+    pipeline.analyze("DELETE FROM users;")
+
     recent = get_recent_analyses(limit=5)
-    check("analyses logged to SQLite", len(recent) >= 2)
-    check("logged query matches", any("DELETE FROM users" in r["query"] for r in recent))
-
-    # --- Test 6: Pipeline with empty ChromaDB (no similar cases crash) ---
-    report_basic = pipeline.analyze("UPDATE customers SET status = 'inactive';")
-    check("works with UPDATE without WHERE", report_basic is not None)
-    check("detects UPDATE_WITHOUT_WHERE", any(f.rule_name == "UPDATE_WITHOUT_WHERE" for f in report_basic.lint_findings))
-    check("severity is CRITICAL for UPDATE without WHERE", report_basic.overall_severity == Severity.CRITICAL)
-
-    # --- Test 7: Report fields are all populated ---
-    check("report has query text", len(report.query) > 0)
-    check("report has timestamp", report.timestamp is not None)
-    check("report has summary", len(report.summary) > 0)
-
-    # --- Summary ---
-    print(f"\n{'-'*40}")
-    print(f"  {GREEN}Passed: {passed}{RESET}  {RED}Failed: {failed}{RESET}")
-    print(f"{'-'*40}\n")
-
-    # Cleanup
-    try:
-        os.remove("./test_pipeline.db")
-    except OSError:
-        pass
-
-    return failed == 0
+    assert len(recent) >= 2
+    assert any("DELETE FROM users" in r["query"] for r in recent)
 
 
-if __name__ == "__main__":
-    success = run_tests()
-    sys.exit(0 if success else 1)
+# --------------------------------------------------------------------------
+# LLM present (new coverage — the script could not do this without a key)
+# --------------------------------------------------------------------------
+
+def test_llm_analysis_is_attached_when_the_llm_succeeds(env, mock_groq):
+    from app import pipeline
+
+    mock_groq.set_tokens(555)
+    report = pipeline.analyze("SELECT * FROM orders;")
+
+    assert report.llm_analysis is not None
+    assert report.llm_analysis["risk_level"] == "MEDIUM"
+    assert report.tokens_used == 555
+
+
+def test_pipeline_survives_an_llm_failure(env, mock_groq):
+    from app import pipeline
+
+    mock_groq.set_error(RuntimeError("groq is down"))
+    report = pipeline.analyze("SELECT * FROM orders;")
+
+    assert report.llm_analysis is None
+    assert any(f.rule_name == "SELECT_STAR" for f in report.lint_findings)
