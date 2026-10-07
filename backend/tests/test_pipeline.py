@@ -218,3 +218,52 @@ def test_pipeline_survives_an_llm_failure(env, mock_groq):
 
     assert report.llm_analysis is None
     assert any(f.rule_name == "SELECT_STAR" for f in report.lint_findings)
+
+
+# --------------------------------------------------------------------------
+# Similarity threshold
+#
+# report.similar_cases goes into the LLM prompt as "similar past cases", so a
+# distant neighbour there invites the model to reason from an irrelevant
+# precedent. The pipeline keeps only genuine matches; weak ones are surfaced,
+# labelled, by the MCP search_similar_cases tool instead.
+# --------------------------------------------------------------------------
+
+def test_low_confidence_cases_are_excluded_from_the_report(env, monkeypatch):
+    from app import pipeline, rag
+
+    def fake_search(query, problems=None, n_results=None, min_similarity=None):
+        return [
+            {"case_id": "strong", "similarity": 0.80, "low_confidence": False},
+            {"case_id": "weak", "similarity": 0.20, "low_confidence": True},
+        ]
+
+    monkeypatch.setattr(rag, "search_similar", fake_search)
+    report = pipeline.analyze("SELECT * FROM orders;")
+    assert [c["case_id"] for c in report.similar_cases] == ["strong"]
+
+
+def test_a_query_with_no_real_precedent_gets_no_similar_cases(env):
+    """The original bug, at the pipeline layer."""
+    from app import pipeline
+
+    report = pipeline.analyze("slow scan")
+    assert report.similar_cases == []
+
+
+def test_a_seeded_query_still_gets_its_precedent(env):
+    """The threshold must not suppress a genuine match."""
+    from app import pipeline
+
+    report = pipeline.analyze(
+        "SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;"
+    )
+    assert any(c["case_id"] == "sarg-extract-date" for c in report.similar_cases)
+
+
+def test_report_cases_are_all_above_the_threshold(env):
+    from app import pipeline
+    from app.config import config
+
+    report = pipeline.analyze("SELECT * FROM orders;")
+    assert all(c["similarity"] >= config.RAG_MIN_SIMILARITY for c in report.similar_cases)

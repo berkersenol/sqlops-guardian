@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app import pipeline
 from app.case_store import log_feedback, get_metrics, get_recent_analyses
 from app.rag import add_case, get_case_count
+from app.serialization import report_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -76,26 +77,7 @@ def analyze_sql(req: AnalyzeRequest):
     """Run the full analysis pipeline on a SQL query."""
     try:
         report = pipeline.analyze(req.query)
-        return {
-            "query": report.query,
-            "timestamp": report.timestamp.isoformat(),
-            "lint_findings": [
-                {
-                    "rule_name": f.rule_name,
-                    "severity": f.severity.value,
-                    "description": f.description,
-                    "suggestion": f.suggestion,
-                    "line_number": f.line_number,
-                }
-                for f in report.lint_findings
-            ],
-            "overall_severity": report.overall_severity.value,
-            "summary": report.summary,
-            "similar_cases": report.similar_cases,
-            "llm_analysis": report.llm_analysis,
-            "response_time_ms": report.response_time_ms,
-            "tokens_used": report.tokens_used,
-        }
+        return report_to_dict(report)
     except Exception as e:
         logger.exception("Analysis failed")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")

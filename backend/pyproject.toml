@@ -8,6 +8,7 @@ dependencies = [
     "chromadb>=1.5.1",
     "fastapi>=0.133.1",
     "groq>=1.2.0",
+    "mcp[cli]>=2.3.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
     "sqlglot>=30.21.0",

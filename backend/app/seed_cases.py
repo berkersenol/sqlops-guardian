@@ -5,9 +5,12 @@ Run: uv run python -m app.seed_cases
 """
 
 import json
+import logging
 import os
 
 from .rag import init_collection, add_case, get_case_count
+
+logger = logging.getLogger(__name__)
 
 
 def seed():
@@ -28,9 +31,12 @@ def seed():
         )
 
     count = get_case_count()
-    print(f"Seeded {count} cases into ChromaDB.")
+    # Logged, not printed: pipeline.init() calls this, and the MCP server
+    # calls that on first use, where stdout carries the JSON-RPC frames.
+    logger.info("Seeded %d cases into ChromaDB.", count)
     return count
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     seed()

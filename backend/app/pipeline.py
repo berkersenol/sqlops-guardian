@@ -51,7 +51,18 @@ def analyze(sql: str) -> AnalysisReport:
     try:
         from .rag import search_similar
         problem_names = [f.rule_name for f in findings]
-        similar_cases = search_similar(sql, problems=problem_names)
+        retrieved = search_similar(sql, problems=problem_names)
+        # Keep only genuine matches. The search always returns its nearest
+        # neighbours however distant, and these go into the LLM prompt as
+        # "similar past cases" -- feeding it unrelated precedents invites it to
+        # reason from them. Weak neighbours are surfaced, labelled as weak, by
+        # the MCP search_similar_cases tool, whose job is to show retrieval.
+        similar_cases = [c for c in retrieved if not c["low_confidence"]]
+        dropped = len(retrieved) - len(similar_cases)
+        if dropped:
+            logger.info(
+                "Dropped %d retrieved case(s) below the similarity threshold.", dropped
+            )
     except Exception as e:
         logger.warning(f"RAG search failed, continuing without similar cases: {e}")
 

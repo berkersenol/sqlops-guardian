@@ -140,6 +140,135 @@ curl -X POST http://localhost:8000/analyze \
 - `severity_summary` — count of findings by severity level
 - `analysis_id` — unique ID for feedback and tracking
 
+## MCP Server
+
+The same analysis layers are exposed over the [Model Context Protocol](https://modelcontextprotocol.io),
+so SQLOps Guardian can be used directly from any MCP host — Claude Desktop,
+Cursor, or Claude Code — without the REST API or the frontend running.
+
+`backend/mcp_server.py` is an adapter, not a reimplementation: each tool calls
+the same functions the REST API uses.
+
+### Tools
+
+| Tool | Cost | Reaches the network | Writes |
+|------|------|---------------------|--------|
+| `lint_sql(query)` | Free, milliseconds, deterministic | No | No |
+| `search_similar_cases(query, top_k=3)` | Free, local embeddings | No | No |
+| `analyze_sql(query)` | Groq API tokens, seconds | Yes (Groq) | Appends to the SQLite analysis log |
+
+`lint_sql` is the default choice for "is this query OK?" — it is the sqlglot
+rule engine alone, so it needs no API key and returns identical findings for
+identical input. `analyze_sql` adds the RAG and LLM layers on top, returning
+suggested indexes, a rewritten query and an explanation.
+
+`search_similar_cases` separates genuine matches from weak ones rather than
+returning whatever happens to be nearest: `cases` holds results at or above
+`RAG_MIN_SIMILARITY`, `weak_matches` holds the rest, and an empty `cases` list
+is a real answer — the knowledge base holds no precedent. It also feeds the
+linter's rule names into the search, which is what makes retrieval accurate
+enough for that distinction to hold; see
+[Retrieval evaluation](#retrieval-evaluation).
+
+Each tool is declared with MCP **tool annotations** (`readOnlyHint`,
+`destructiveHint`, `openWorldHint`) that hosts use to decide how much friction
+to put in front of a call: the two read-only tools can be approved more
+freely, while `analyze_sql` is marked as writing (it appends to the analysis
+log), non-destructive (it only ever adds history), and open-world (the query
+text is sent to Groq).
+
+**No tool executes the SQL it is given.** Queries are parsed by sqlglot and
+embedded as text; nothing connects to a database with them.
+
+### Claude Desktop (Windows)
+
+Edit `%APPDATA%\Claude\claude_desktop_config.json` — create it if it does not
+exist — and add:
+
+```json
+{
+  "mcpServers": {
+    "sqlops-guardian": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\work_projects\\sqlops-guardian-main\\backend",
+        "python",
+        "mcp_server.py"
+      ],
+      "env": {
+        "GROQ_API_KEY": "gsk_your_key_here"
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- **Paths need doubled backslashes** (`C:\\work_projects\\...`). JSON treats a
+  single `\` as an escape character, so a Windows path pasted in raw is
+  invalid JSON and the server will silently fail to appear.
+- `uv run --directory <path>` is what makes the project's virtualenv active
+  regardless of where Claude Desktop launches the process from. If `uv` is not
+  on the system PATH, use its full path (`C:\\Users\\you\\.local\\bin\\uv.exe`).
+- `GROQ_API_KEY` is only needed for `analyze_sql`. Without it `lint_sql` and
+  `search_similar_cases` work normally, and `analyze_sql` still returns its
+  deterministic lint findings with a `degraded` note explaining that the LLM
+  layer was skipped. The server also reads `backend/.env`, so the `env` block
+  can be omitted if the key is already there.
+- Restart Claude Desktop fully after editing the file. The tools appear under
+  the tools icon in the message box.
+
+The first call to `search_similar_cases` or `analyze_sql` creates and seeds the
+local ChromaDB store, which downloads the embedding model (~80MB) once. That
+happens on first use rather than at startup, so it cannot stall the connection
+handshake. `lint_sql` needs neither store and is fast immediately.
+
+### Testing with the MCP Inspector
+
+The Inspector is the fastest way to confirm the server works without involving
+a model — it shows the raw JSON-RPC traffic, lists the advertised tools and
+their schemas, and lets you call them by hand. It needs Node.js, not a Python
+install:
+
+```powershell
+# From the backend directory
+cd C:\work_projects\sqlops-guardian-main\backend
+
+# Launch the Inspector wrapping the server over stdio
+npx @modelcontextprotocol/inspector uv run python mcp_server.py
+```
+
+It prints a `http://localhost:6274` URL with a pre-filled session token — open
+it, press **Connect**, then **List Tools**. Useful things to try:
+
+- `lint_sql` with `SELECT * FROM orders` → one `SELECT_STAR` finding,
+  `overall_severity: MEDIUM`.
+- `lint_sql` with an empty `query` → `isError: true` and a message naming the
+  argument, rather than a dropped connection.
+- `search_similar_cases` with `{"query": "SELECT * FROM orders WHERE YEAR(created_at) = 2024"}`
+  → `sarg-extract-date` as a match at ~0.81 similarity.
+- `search_similar_cases` with `{"query": "slow scan"}` → an empty `cases` list
+  and three `weak_matches` at ~0.43, labelled rather than passed off as
+  precedents.
+- `analyze_sql` without `GROQ_API_KEY` set → lint findings plus a `degraded`
+  entry explaining the LLM layer was skipped.
+
+Server logs appear in the Inspector's stderr pane. That is deliberate:
+**under stdio transport, stdout carries the JSON-RPC frames**, so anything
+printed there corrupts the protocol stream. All logging in `mcp_server.py` is
+configured to stderr.
+
+To run the server directly without the Inspector (it will wait on stdin for
+JSON-RPC frames, which is expected):
+
+```powershell
+cd C:\work_projects\sqlops-guardian-main\backend
+uv run python mcp_server.py
+```
+
 ---
 
 ## Detection Rules
@@ -161,7 +290,7 @@ curl -X POST http://localhost:8000/analyze \
 
 ## Tech Stack
 
-**Backend:** Python 3.12 · FastAPI · Pydantic · sqlglot · ChromaDB · Groq API · SQLite · uv
+**Backend:** Python 3.12 · FastAPI · Pydantic · sqlglot · ChromaDB · Groq API · SQLite · MCP Python SDK · uv
 
 **Frontend:** React 18 · Vite · Tailwind CSS · Recharts · react-markdown
 
@@ -184,9 +313,11 @@ sqlops-guardian/
 │   │   ├── pipeline.py         # Orchestrator: Linter → RAG → LLM → Log
 │   │   ├── case_store.py       # SQLite operations layer
 │   │   ├── models.py           # Pydantic models
-│   │   └── seed_cases.py       # Seed data loader
-│   ├── tests/                  # 99 pytest tests
-│   ├── evals/                  # Linter evaluation harness + golden set
+│   │   ├── seed_cases.py       # Seed data loader
+│   │   └── serialization.py    # Domain models -> JSON (shared by API and MCP)
+│   ├── mcp_server.py           # MCP server over stdio (3 tools)
+│   ├── tests/                  # pytest suite
+│   ├── evals/                  # Linter + retrieval eval harnesses and golden sets
 │   ├── cases/                  # Seed case data
 │   ├── samples/                # Example SQL files
 │   └── main.py                 # Entry point
@@ -219,8 +350,16 @@ LLM_MODEL=groq/compound
 LLM_MAX_TOKENS=4096
 CHROMA_PERSIST_DIR=./data/chroma_db
 SQLITE_DB_PATH=./data/sqlops_guardian.db
+RAG_TOP_K=3
+RAG_MIN_SIMILARITY=0.5
 LOG_LEVEL=INFO
 ```
+
+`RAG_MIN_SIMILARITY` is the cut-off below which a retrieved case is flagged
+low-confidence rather than presented as a match. The default is calibrated
+against a golden set, not chosen by feel — raising it to 0.6 discards about a
+third of genuine matches. See [Retrieval evaluation](#retrieval-evaluation)
+before changing it.
 
 ---
 
@@ -231,7 +370,7 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-99 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, and case store.
+262 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, case store, MCP server, seed data, and the retrieval eval harness.
 The Groq client is mocked throughout, so the suite needs no API key and makes no network calls.
 Each test gets its own temporary SQLite file and ChromaDB directory, so runs never touch real data.
 
@@ -239,11 +378,15 @@ Each test gets its own temporary SQLite file and ChromaDB directory, so runs nev
 
 ## Evaluation
 
-The deterministic linter is evaluated separately from the LLM. The linter is the
-only layer with a single correct answer — same query, same findings, every time —
-so it can be scored by exact comparison against labeled data. It is also the layer
-that still works when Groq is unreachable, so its score is a direct measurement of
-the system's worst-case behaviour.
+Two layers are evaluated against labeled data: the deterministic **linter**, and
+**retrieval** from the RAG knowledge base. Both are scored because both have a
+checkable right answer and neither depends on the LLM — so together they measure
+what the system does when Groq is unreachable. The LLM layer itself is not scored
+here.
+
+The linter has a single correct answer — same query, same findings, every time —
+so it is scored by exact comparison. Retrieval is scored by whether the right
+seed case comes back, and is also what calibrates the similarity threshold.
 
 ### The golden set
 
@@ -394,6 +537,100 @@ Two refinements fell out of the rewrite:
   and by its table name when it does not, so `LEFT JOIN orders o`, `LEFT JOIN
   orders AS o`, and `LEFT JOIN orders` are all covered. `IS NULL` / `IS NOT NULL`
   remain exempt, since that is the deliberate anti-join idiom.
+
+### Retrieval evaluation
+
+A vector search always returns its *n* nearest neighbours, however far away
+they are. Searching for `"slow scan"` returned three unrelated cases at ~0.43
+similarity, shaped exactly like genuine matches — nothing in the response said
+they were weak.
+
+The fix is a minimum similarity (`RAG_MIN_SIMILARITY`, default **0.5**), below
+which a result is flagged `low_confidence` instead of being presented as a
+match. The threshold is calibrated against a golden set rather than guessed.
+
+**The golden set** (`evals/golden_retrieval.json`) is 13 positives — a query
+plus the seed `case_id` that should be retrieved — and 6 negatives, queries with
+no legitimate precedent (`"slow scan"`, `VACUUM ANALYZE orders;`, a connection
+pool question). The negatives are what make the exercise meaningful: with
+positives only, every threshold below the lowest correct score scores perfectly,
+and the data would always favour a threshold of 0.
+
+**The first finding was about the search text, not the threshold.** Cases are
+indexed as a description — `"Query on orders. Problems: FUNCTION_ON_COLUMN,
+SELECT_STAR. Fix: ..."` — while the MCP tool was searching with raw SQL alone.
+That asymmetry depressed every score. Passing the linter's rule names alongside
+the query (free, local, deterministic — the linter already runs) aligns the
+query with the indexed `Problems:` field:
+
+| Search shape | hit rate@1 | hit rate@3 | worst correct score |
+|---|---|---|---|
+| Query only | 62% | 85% | 0.329 |
+| Query + lint rule names | 77% | **100%** | **0.538** |
+
+Without that change no threshold works at all: correct matches ran as low as
+0.329 while incorrect ones reached 0.480, so any cut-off that removed the noise
+also removed real matches.
+
+**The threshold sweep**, on the aligned search shape. `wrong suppressed` is the
+share of incorrect results falling below the cut-off; `negatives rejected` is
+the share of no-precedent queries returning no match at all:
+
+| Threshold | hit rate@3 | wrong suppressed | negatives rejected |
+|---|---|---|---|
+| 0.40 | 100% | 34% | 67% |
+| 0.45 | 100% | 55% | 83% |
+| **0.50** | **100%** | **68%** | **100%** |
+| 0.55 | 92% | 86% | 100% |
+| 0.60 | 69% | 95% | 100% |
+| 0.65 | 54% | 100% | 100% |
+
+**0.5 is the highest threshold that costs no hit rate**, and it is also the
+first that rejects every negative query outright. It sits in a real gap: the
+best score any no-precedent query achieves is **0.480**, and the worst correct
+match scores **0.538**.
+
+The originally proposed default of 0.6 would have been a bad choice — it keeps
+only 69% of correct matches, discarding four genuine precedents to suppress
+noise that 0.5 already handles.
+
+Two caveats worth keeping in mind:
+
+- **The margin is thin** (~0.03 either side). Re-run the eval after changing the
+  seed cases, the embedding text in `rag._build_case_text`, or the embedding
+  model. CI gates on hit rate@3 = 1.0, and
+  `tests/test_eval_retrieval.py` asserts both edges of the gap.
+- **Incorrect results above 0.5 do occur, but only beside a correct one.** A
+  query about `UPPER(col)` also retrieves the `EXTRACT()` and `LOWER()` cases at
+  0.53–0.59. Those are genuinely related — all three are `FUNCTION_ON_COLUMN`
+  cases — and are "incorrect" only because the golden set labels a single
+  expected case per query. That is a limit of single-ground-truth labelling, not
+  a leak in the threshold, and a test pins the distinction: no query that
+  retrieves *no* correct case may produce a result above the threshold.
+
+**Where weak results surface.** They are flagged, not dropped, and each layer
+makes its own choice:
+
+- `rag.search_similar` flags every result and drops nothing, so callers decide
+  and the eval can read the raw distribution.
+- `pipeline.analyze` keeps only genuine matches, because `similar_cases` goes
+  into the LLM prompt as "similar past cases" — handing the model an unrelated
+  precedent invites it to reason from it.
+- The MCP `search_similar_cases` tool returns both, separated: `cases` for real
+  matches and `weak_matches` for the rest, plus the `min_similarity` applied.
+  Showing retrieval quality is that tool's job.
+
+**Running it:**
+
+```bash
+cd backend
+uv run python -m app.seed_cases                      # the eval needs a seeded store
+
+uv run python -m evals.eval_retrieval                # report + JSON to evals/results/
+uv run python -m evals.eval_retrieval --query-only   # without the lint rule names
+uv run python -m evals.eval_retrieval --top-k 5
+uv run python -m evals.eval_retrieval --min-hit-rate 1.0   # exit 1 below that (CI)
+```
 
 ### Graceful degradation
 

@@ -1,0 +1,135 @@
+[
+  {
+    "id": "pos-function-on-date",
+    "category": "positive",
+    "query": "SELECT * FROM orders WHERE YEAR(created_at) = 2024;",
+    "expected_case_id": "sarg-extract-date",
+    "note": "Same anti-pattern as the seed case, different function name and year."
+  },
+  {
+    "id": "pos-function-lower",
+    "category": "positive",
+    "query": "SELECT id FROM users WHERE LOWER(username) = 'bob';",
+    "expected_case_id": "sarg-lower-email",
+    "note": "LOWER() on a different table and column than the seed case."
+  },
+  {
+    "id": "pos-function-upper",
+    "category": "positive",
+    "query": "SELECT * FROM staff WHERE UPPER(surname) = 'JONES';",
+    "expected_case_id": "sarg-upper-name",
+    "note": "UPPER() plus SELECT *, matching the seed case's problem pair."
+  },
+  {
+    "id": "pos-select-star-join",
+    "category": "positive",
+    "query": "SELECT * FROM users u JOIN carts c ON u.id = c.user_id JOIN cart_items ci ON c.id = ci.cart_id;",
+    "expected_case_id": "select-star-join",
+    "note": "Three-table join with SELECT *, different domain nouns."
+  },
+  {
+    "id": "pos-delete-no-where",
+    "category": "positive",
+    "query": "DELETE FROM audit_log;",
+    "expected_case_id": "delete-no-where",
+    "note": "Unqualified DELETE on a different log table."
+  },
+  {
+    "id": "pos-update-no-where",
+    "category": "positive",
+    "query": "UPDATE accounts SET active = false;",
+    "expected_case_id": "update-no-where",
+    "note": "Unqualified UPDATE setting a boolean flag, as in the seed case."
+  },
+  {
+    "id": "pos-leading-wildcard",
+    "category": "positive",
+    "query": "SELECT id, name FROM clients WHERE company_name LIKE '%corp%';",
+    "expected_case_id": "leading-wildcard-search",
+    "note": "Substring search on a name column; the seed case is the same shape."
+  },
+  {
+    "id": "pos-leading-wildcard-domain",
+    "category": "positive",
+    "query": "SELECT * FROM accounts WHERE email LIKE '%@yahoo.com';",
+    "expected_case_id": "leading-wildcard-email-domain",
+    "note": "Email-domain suffix match. Competes with leading-wildcard-search, so it also tests whether the more specific case wins."
+  },
+  {
+    "id": "pos-left-join-trap",
+    "category": "positive",
+    "query": "SELECT u.name, p.amount FROM users u LEFT JOIN payments p ON u.id = p.user_id WHERE p.status = 'settled';",
+    "expected_case_id": "left-join-where-trap",
+    "note": "LEFT JOIN with a status filter in WHERE, matching the seed case exactly in shape."
+  },
+  {
+    "id": "pos-order-by-no-limit",
+    "category": "positive",
+    "query": "SELECT id, name, salary FROM staff ORDER BY salary DESC;",
+    "expected_case_id": "order-by-no-limit",
+    "note": "Unbounded top-N sort, the seed case's shape."
+  },
+  {
+    "id": "pos-not-in-subquery",
+    "category": "positive",
+    "query": "SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM payments);",
+    "expected_case_id": "not-in-null-trap",
+    "note": "NOT IN against a subquery; the NULL trap the seed case documents."
+  },
+  {
+    "id": "pos-or-across-columns",
+    "category": "positive",
+    "query": "SELECT * FROM items WHERE type = 'Book' OR publisher = 'Penguin';",
+    "expected_case_id": "or-across-columns",
+    "note": "OR across two unrelated columns, preventing single-index use."
+  },
+  {
+    "id": "pos-correlated-subquery",
+    "category": "positive",
+    "query": "SELECT e.name, (SELECT COUNT(*) FROM orders o WHERE o.emp_id = e.id) AS n FROM employees e ORDER BY n DESC;",
+    "expected_case_id": "correlated-subquery-scale",
+    "note": "Per-row correlated aggregate, the seed case's shape."
+  },
+  {
+    "id": "neg-slow-scan",
+    "category": "negative",
+    "query": "slow scan",
+    "expected_case_id": null,
+    "note": "The query from the original bug report. Too vague to name one precedent: nearly every case involves a scan, so no single one is the right answer."
+  },
+  {
+    "id": "neg-create-table",
+    "category": "negative",
+    "query": "CREATE TABLE invoices (id INT PRIMARY KEY, total NUMERIC);",
+    "expected_case_id": null,
+    "note": "DDL. The knowledge base is entirely about read and write query shapes."
+  },
+  {
+    "id": "neg-permissions",
+    "category": "negative",
+    "query": "How do I grant a read-only role to a new database user?",
+    "expected_case_id": null,
+    "note": "Administration, not query performance. Nothing in the knowledge base applies."
+  },
+  {
+    "id": "neg-vacuum",
+    "category": "negative",
+    "query": "VACUUM ANALYZE orders;",
+    "expected_case_id": null,
+    "note": "Table maintenance. Mentions a table the knowledge base knows, which is exactly the kind of lexical overlap a threshold has to survive."
+  },
+  {
+    "id": "neg-off-domain",
+    "category": "negative",
+    "query": "What is the capital of France?",
+    "expected_case_id": null,
+    "note": "Entirely off-domain. The floor of the similarity range: anything scoring near this is noise."
+  },
+  {
+    "id": "neg-connection-pool",
+    "category": "negative",
+    "query": "Our connection pool keeps running out of connections under load.",
+    "expected_case_id": null,
+    "note": "A real database problem, but an infrastructure one. Plausible-sounding and in-domain vocabulary, with no matching precedent."
+  }
+]

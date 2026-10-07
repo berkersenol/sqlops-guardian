@@ -86,10 +86,25 @@ def search_similar(
     query: str,
     problems: list[str] | None = None,
     n_results: int | None = None,
+    min_similarity: float | None = None,
 ) -> list[dict]:
-    """Search for similar cases. Returns list of cases with similarity scores."""
+    """Search for similar cases. Returns list of cases with similarity scores.
+
+    A vector search always returns its n nearest neighbours, however far away
+    they are, so an unrelated query still comes back with a full set of
+    results. Each case therefore carries a `low_confidence` flag: True when
+    its similarity is below `min_similarity` (default config.RAG_MIN_SIMILARITY,
+    calibrated in evals/eval_retrieval.py).
+
+    Results are flagged rather than dropped, so a caller can still show a weak
+    match clearly labelled as weak, and so the eval harness can see the raw
+    distribution. Pass min_similarity=0.0 to flag nothing.
+    """
     col = _get_collection()
     n = n_results or config.RAG_TOP_K
+    threshold = (
+        config.RAG_MIN_SIMILARITY if min_similarity is None else min_similarity
+    )
 
     # Build search text from the query and its problems
     search_text = f"Query: {query}"
@@ -114,6 +129,7 @@ def search_similar(
     for i, case_id in enumerate(results["ids"][0]):
         meta = metadatas[i] if i < len(metadatas) else {}
         distance = distances[i] if i < len(distances) else None
+        similarity = round(1 - distance, 4) if distance is not None else None
         cases.append({
             "case_id": case_id,
             "document": documents[i] if i < len(documents) else "",
@@ -122,7 +138,10 @@ def search_similar(
             "tables": _meta_list(meta, "tables"),
             "problems": _meta_list(meta, "problems"),
             "distance": distance,
-            "similarity": round(1 - distance, 4) if distance is not None else None,
+            "similarity": similarity,
+            # An unknown similarity is treated as low confidence: better to
+            # under-claim than to present an unscored neighbour as a match.
+            "low_confidence": similarity is None or similarity < threshold,
         })
 
     return cases
