@@ -27,7 +27,7 @@ from sqlglot import expressions as exp
 from sqlglot.errors import ParseError
 
 from . import linter_regex
-from .models import LintFinding, Severity
+from .models import SEVERITY_RANK, LintFinding, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -403,12 +403,9 @@ ALL_RULES = [
 # Main linter function — runs all checks
 # ============================================
 
-_SEVERITY_ORDER = {
-    Severity.CRITICAL: 0,
-    Severity.HIGH: 1,
-    Severity.MEDIUM: 2,
-    Severity.LOW: 3,
-}
+# Single source of truth lives in models.SEVERITY_RANK; the pipeline orders
+# severities too, and two copies could drift.
+_SEVERITY_ORDER = SEVERITY_RANK
 
 
 def lint_sql(sql: str) -> list[LintFinding]:
