@@ -140,6 +140,124 @@ curl -X POST http://localhost:8000/analyze \
 - `severity_summary` — count of findings by severity level
 - `analysis_id` — unique ID for feedback and tracking
 
+## MCP Server
+
+The same analysis layers are exposed over the [Model Context Protocol](https://modelcontextprotocol.io),
+so SQLOps Guardian can be used directly from any MCP host — Claude Desktop,
+Cursor, or Claude Code — without the REST API or the frontend running.
+
+`backend/mcp_server.py` is an adapter, not a reimplementation: each tool calls
+the same functions the REST API uses.
+
+### Tools
+
+| Tool | Cost | Reaches the network | Writes |
+|------|------|---------------------|--------|
+| `lint_sql(query)` | Free, milliseconds, deterministic | No | No |
+| `search_similar_cases(query, top_k=3)` | Free, local embeddings | No | No |
+| `analyze_sql(query)` | Groq API tokens, seconds | Yes (Groq) | Appends to the SQLite analysis log |
+
+`lint_sql` is the default choice for "is this query OK?" — it is the sqlglot
+rule engine alone, so it needs no API key and returns identical findings for
+identical input. `analyze_sql` adds the RAG and LLM layers on top, returning
+suggested indexes, a rewritten query and an explanation.
+
+Each tool is declared with MCP **tool annotations** (`readOnlyHint`,
+`destructiveHint`, `openWorldHint`) that hosts use to decide how much friction
+to put in front of a call: the two read-only tools can be approved more
+freely, while `analyze_sql` is marked as writing (it appends to the analysis
+log), non-destructive (it only ever adds history), and open-world (the query
+text is sent to Groq).
+
+**No tool executes the SQL it is given.** Queries are parsed by sqlglot and
+embedded as text; nothing connects to a database with them.
+
+### Claude Desktop (Windows)
+
+Edit `%APPDATA%\Claude\claude_desktop_config.json` — create it if it does not
+exist — and add:
+
+```json
+{
+  "mcpServers": {
+    "sqlops-guardian": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\work_projects\\sqlops-guardian-main\\backend",
+        "python",
+        "mcp_server.py"
+      ],
+      "env": {
+        "GROQ_API_KEY": "gsk_your_key_here"
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- **Paths need doubled backslashes** (`C:\\work_projects\\...`). JSON treats a
+  single `\` as an escape character, so a Windows path pasted in raw is
+  invalid JSON and the server will silently fail to appear.
+- `uv run --directory <path>` is what makes the project's virtualenv active
+  regardless of where Claude Desktop launches the process from. If `uv` is not
+  on the system PATH, use its full path (`C:\\Users\\you\\.local\\bin\\uv.exe`).
+- `GROQ_API_KEY` is only needed for `analyze_sql`. Without it `lint_sql` and
+  `search_similar_cases` work normally, and `analyze_sql` still returns its
+  deterministic lint findings with a `degraded` note explaining that the LLM
+  layer was skipped. The server also reads `backend/.env`, so the `env` block
+  can be omitted if the key is already there.
+- Restart Claude Desktop fully after editing the file. The tools appear under
+  the tools icon in the message box.
+
+The first call to `search_similar_cases` or `analyze_sql` creates and seeds the
+local ChromaDB store, which downloads the embedding model (~80MB) once. That
+happens on first use rather than at startup, so it cannot stall the connection
+handshake. `lint_sql` needs neither store and is fast immediately.
+
+### Testing with the MCP Inspector
+
+The Inspector is the fastest way to confirm the server works without involving
+a model — it shows the raw JSON-RPC traffic, lists the advertised tools and
+their schemas, and lets you call them by hand. It needs Node.js, not a Python
+install:
+
+```powershell
+# From the backend directory
+cd C:\work_projects\sqlops-guardian-main\backend
+
+# Launch the Inspector wrapping the server over stdio
+npx @modelcontextprotocol/inspector uv run python mcp_server.py
+```
+
+It prints a `http://localhost:6274` URL with a pre-filled session token — open
+it, press **Connect**, then **List Tools**. Useful things to try:
+
+- `lint_sql` with `SELECT * FROM orders` → one `SELECT_STAR` finding,
+  `overall_severity: MEDIUM`.
+- `lint_sql` with an empty `query` → `isError: true` and a message naming the
+  argument, rather than a dropped connection.
+- `search_similar_cases` with `top_k: 2` → two precedents with similarity
+  scores.
+- `analyze_sql` without `GROQ_API_KEY` set → lint findings plus a `degraded`
+  entry explaining the LLM layer was skipped.
+
+Server logs appear in the Inspector's stderr pane. That is deliberate:
+**under stdio transport, stdout carries the JSON-RPC frames**, so anything
+printed there corrupts the protocol stream. All logging in `mcp_server.py` is
+configured to stderr.
+
+To run the server directly without the Inspector (it will wait on stdin for
+JSON-RPC frames, which is expected):
+
+```powershell
+cd C:\work_projects\sqlops-guardian-main\backend
+uv run python mcp_server.py
+```
+
 ---
 
 ## Detection Rules
@@ -161,7 +279,7 @@ curl -X POST http://localhost:8000/analyze \
 
 ## Tech Stack
 
-**Backend:** Python 3.12 · FastAPI · Pydantic · sqlglot · ChromaDB · Groq API · SQLite · uv
+**Backend:** Python 3.12 · FastAPI · Pydantic · sqlglot · ChromaDB · Groq API · SQLite · MCP Python SDK · uv
 
 **Frontend:** React 18 · Vite · Tailwind CSS · Recharts · react-markdown
 
@@ -184,8 +302,10 @@ sqlops-guardian/
 │   │   ├── pipeline.py         # Orchestrator: Linter → RAG → LLM → Log
 │   │   ├── case_store.py       # SQLite operations layer
 │   │   ├── models.py           # Pydantic models
-│   │   └── seed_cases.py       # Seed data loader
-│   ├── tests/                  # 99 pytest tests
+│   │   ├── seed_cases.py       # Seed data loader
+│   │   └── serialization.py    # Domain models -> JSON (shared by API and MCP)
+│   ├── mcp_server.py           # MCP server over stdio (3 tools)
+│   ├── tests/                  # pytest suite
 │   ├── evals/                  # Linter evaluation harness + golden set
 │   ├── cases/                  # Seed case data
 │   ├── samples/                # Example SQL files
@@ -231,7 +351,7 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-99 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, and case store.
+187 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, case store, and MCP server.
 The Groq client is mocked throughout, so the suite needs no API key and makes no network calls.
 Each test gets its own temporary SQLite file and ChromaDB directory, so runs never touch real data.
 
