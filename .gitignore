@@ -49,3 +49,4 @@ sqlops-guardian-full-prompt.md
 backend/evals/results/*
 !backend/evals/results/linter_baseline_regex.json
 !backend/evals/results/linter_sqlglot.json
+!backend/evals/results/linter_holdout.json

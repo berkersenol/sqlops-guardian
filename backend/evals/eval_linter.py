@@ -5,6 +5,7 @@ and reports precision / recall per rule and per category.
 Usage (from backend/):
     python -m evals.eval_linter            # print report, save JSON to evals/results/
     python -m evals.eval_linter --min-f1 0.8   # exit 1 if overall F1 drops below 0.8 (for CI)
+    python -m evals.eval_linter --golden evals/golden_linter_holdout.json
 """
 
 import argparse
@@ -34,8 +35,19 @@ def fmt(x: float | None) -> str:
     return " n/a" if x is None else f"{x:.2f}"
 
 
-def run() -> dict:
-    cases = json.loads(GOLDEN_PATH.read_text())
+def result_path_for(golden: Path) -> Path:
+    """
+    Name the output after the golden file so one set does not overwrite
+    another's result. The default set keeps its historical filename.
+    """
+    stem = golden.stem
+    if stem == "golden_linter":
+        return RESULTS_DIR / "linter_latest.json"
+    return RESULTS_DIR / f"linter_latest_{stem.replace('golden_linter_', '')}.json"
+
+
+def run(golden: Path = GOLDEN_PATH) -> dict:
+    cases = json.loads(golden.read_text())
     per_rule = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     per_category = defaultdict(lambda: {"total": 0, "exact": 0})
     mismatches = []
@@ -72,6 +84,7 @@ def run() -> dict:
 
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "golden_set": golden.name,
         "n_cases": len(cases),
         "overall": {"precision": precision, "recall": recall,
                     "f1": f1(precision, recall), "tp": tp, "fp": fp, "fn": fn},
@@ -117,13 +130,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-f1", type=float, default=None,
                         help="Fail (exit 1) if overall F1 is below this value")
+    parser.add_argument("--golden", type=Path, default=GOLDEN_PATH,
+                        help=f"Golden set to evaluate against (default: {GOLDEN_PATH.name})")
     args = parser.parse_args()
 
-    res = run()
+    if not args.golden.is_file():
+        raise SystemExit(f"Golden set not found: {args.golden}")
+
+    res = run(args.golden)
     print_report(res)
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    out = RESULTS_DIR / "linter_latest.json"
+    out = result_path_for(args.golden)
     out.write_text(json.dumps(res, indent=2))
     print(f"\nSaved {out.relative_to(EVAL_DIR.parent)}")
 

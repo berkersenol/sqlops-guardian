@@ -261,13 +261,44 @@ right?") and **recall** ("of the real problems, how many did it catch?"), plus a
 exact-match rate per category — a case counts only if the set of rules fired equals
 the labeled set exactly.
 
+### Why there are two sets
+
+`golden_linter.json` (32 cases) is the **main set**. The sqlglot rules were developed
+against it, one rule at a time, with the eval re-run after each. That makes it the
+right thing to gate CI on, but it also means a perfect score on it is partly a
+measure of fitting that particular set — the cases were in front of us while the code
+was being written.
+
+`golden_linter_holdout.json` (13 cases) is the **held-out set**, written independently
+and never consulted while the rules were being built. It exists to answer a different
+question: do the rules generalise to SQL they were not tuned on? It deliberately
+probes constructs absent from the main set — a CTE with a star in the outer query,
+`SELECT *` inside `EXISTS`, `TRIM` (a function the old regex list never knew about),
+a block comment before a real `DROP`, `LIMIT ... OFFSET`, a trailing-wildcard `LIKE`,
+and a `LEFT JOIN` whose filter correctly sits in the `ON` clause.
+
+The split is what makes the headline number trustworthy. A high score on the set you
+developed against can mean the rules are correct, or merely that they were shaped to
+fit; only a set held back can tell those apart. It earned its keep immediately — see
+below.
+
 ### Running it
 
 ```bash
 cd backend
-uv run python -m evals.eval_linter            # print the report, write evals/results/linter_latest.json
-uv run python -m evals.eval_linter --min-f1 0.8   # also exit 1 if overall F1 drops below 0.8
+
+# main set (default)
+uv run python -m evals.eval_linter
+
+# held-out set
+uv run python -m evals.eval_linter --golden evals/golden_linter_holdout.json
+
+# fail (exit 1) if overall F1 drops below a threshold -- this is what CI gates on
+uv run python -m evals.eval_linter --min-f1 0.95
 ```
+
+`--golden` selects the set; the result filename is derived from it, so one set never
+overwrites another's output.
 
 Results land in `backend/evals/results/`, which is gitignored apart from committed
 baselines so runs can be compared over time.
@@ -313,6 +344,28 @@ Per rule, precision / recall:
 
 Four rules were already perfect on this set and stayed perfect — the gain is
 concentrated in the six that depended on reading text as structure.
+
+### Held-out results
+
+On the 13 held-out cases the tree-based linter scores **13/13, precision 1.00,
+recall 1.00, F1 1.00** (`linter_holdout.json`).
+
+It did not start there. The first held-out run scored 12/13 and exposed a real bug:
+`EXISTS (SELECT * FROM users u WHERE u.id = o.user_id)` was reported as
+`FUNCTION_ON_COLUMN`. The cause is that sqlglot models `EXISTS` as an `exp.Func`
+subclass, and the rule searched the whole function subtree for a column — so the
+subquery's correlated columns were attributed to `EXISTS` itself, as though it were
+a function applied to them.
+
+The fix was to collect columns **per query scope**, stopping at nested `SELECT` and
+`Subquery` boundaries: a function only wraps a column if the column is one of its own
+arguments. That is the general form of an earlier narrower fix (`AND`/`OR` are also
+`exp.Func` subclasses and had to be excluded by type), and it resolves the `EXISTS`
+case without a special case for `EXISTS`. The main set stayed at 32/32 throughout.
+
+This is exactly the kind of defect a held-out set exists to find: every construct
+involved was absent from the main 32, so no amount of re-running that set would have
+surfaced it.
 
 ### Why the tree fixes the tricky cases
 

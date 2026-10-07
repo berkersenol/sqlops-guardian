@@ -1,5 +1,6 @@
 {
-  "timestamp": "2026-10-07T10:03:16",
+  "timestamp": "2026-10-07T10:15:10",
+  "golden_set": "golden_linter.json",
   "n_cases": 32,
   "overall": {
     "precision": 1.0,

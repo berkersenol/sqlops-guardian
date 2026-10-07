@@ -182,6 +182,25 @@ def check_leading_wildcard_like(statement: exp.Expression) -> LintFinding | None
     return None
 
 
+def _columns_in_own_scope(node: exp.Expression) -> list[exp.Column]:
+    """
+    Columns belonging to `node` itself, not to a subquery nested inside it.
+
+    A function only wraps a column if the column is one of its own arguments,
+    in the same query scope. Descending into a nested SELECT would attribute
+    that subquery's columns to the outer construct -- which is how EXISTS
+    (a Func subclass whose body is a whole SELECT) came to look like a
+    function applied to a column.
+    """
+    return [
+        child
+        for child in node.walk(
+            prune=lambda n: n is not node and isinstance(n, (exp.Select, exp.Subquery))
+        )
+        if isinstance(child, exp.Column)
+    ]
+
+
 def check_function_on_column(statement: exp.Expression) -> LintFinding | None:
     """
     Detects functions wrapping columns in WHERE clauses (SARGability violation):
@@ -195,6 +214,10 @@ def check_function_on_column(statement: exp.Expression) -> LintFinding | None:
     Dropping the old hardcoded list of six function names also makes this
     strictly broader — any function applied to a column is caught, not just
     the ones someone remembered to enumerate.
+
+    Columns are collected per scope, so a subquery-bearing construct such as
+    EXISTS (SELECT ... WHERE u.id = o.user_id) is not mistaken for a function
+    applied to those correlated columns.
     """
     for where in statement.find_all(exp.Where):
         for func in where.find_all(exp.Func):
@@ -205,7 +228,7 @@ def check_function_on_column(statement: exp.Expression) -> LintFinding | None:
             # Func that is not a Connector.
             if isinstance(func, exp.Connector):
                 continue
-            if any(True for _ in func.find_all(exp.Column)):
+            if _columns_in_own_scope(func):
                 return LintFinding(
                     rule_name="FUNCTION_ON_COLUMN",
                     severity=Severity.HIGH,
