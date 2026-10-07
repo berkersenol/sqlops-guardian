@@ -7,7 +7,7 @@
 [![React](https://img.shields.io/badge/React-18+-61DAFB.svg)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-111%2B%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-99%20passing-brightgreen.svg)]()
 
 ---
 
@@ -184,7 +184,7 @@ sqlops-guardian/
 │   │   ├── case_store.py       # SQLite operations layer
 │   │   ├── models.py           # Pydantic models
 │   │   └── seed_cases.py       # Seed data loader
-│   ├── tests/                  # 111+ tests
+│   ├── tests/                  # 99 pytest tests
 │   ├── cases/                  # Seed case data
 │   ├── samples/                # Example SQL files
 │   └── main.py                 # Entry point
@@ -229,7 +229,9 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-111+ tests covering the linter, pipeline, RAG integration, API endpoints, and case store.
+99 tests covering the pipeline, RAG integration, API endpoints, LLM analyzer, and case store.
+The Groq client is mocked throughout, so the suite needs no API key and makes no network calls.
+Each test gets its own temporary SQLite file and ChromaDB directory, so runs never touch real data.
 
 ---
 
