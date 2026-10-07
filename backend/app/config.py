@@ -7,7 +7,10 @@ load_dotenv()
 class Config:
     # Groq / LLM
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "groq/compound")
+    # Must be a chat model the account can actually access: "groq/compound"
+    # is an agentic system, not a plain chat model, and returns
+    # 404 model_not_found. `client.models.list()` shows what is available.
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1000"))
 
     # ChromaDB / RAG

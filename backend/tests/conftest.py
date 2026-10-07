@@ -106,10 +106,21 @@ LLM_JSON_RESPONSE = {
 }
 
 
-def _fake_groq_response(content: str, total_tokens: int = 123):
-    """Mimic the shape analyze_with_llm reads: choices[0].message.content + usage."""
+def _fake_groq_response(content: str, total_tokens: int = 123, finish_reason: str = "stop"):
+    """Mimic the shape the analyzer reads: choices[0] with message + finish_reason.
+
+    finish_reason is part of the real response and is not decoration: a
+    reasoning model that exhausts its budget before emitting content returns
+    "length" with content empty, and the analyzer reports that case
+    differently from an ordinary empty answer.
+    """
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content),
+                finish_reason=finish_reason,
+            )
+        ],
         usage=SimpleNamespace(total_tokens=total_tokens),
     )
 
@@ -120,21 +131,29 @@ def mock_groq(monkeypatch):
     Replace llm_analyzer._get_client with a stub and supply a real-looking key.
 
     Returns a control object:
-        mock_groq.set_content(str)   -- what the model "returns"
-        mock_groq.set_error(exc)     -- raise instead of returning
-        mock_groq.calls              -- recorded create() kwargs
+        mock_groq.set_content(str)         -- what the model "returns"
+        mock_groq.set_error(exc)           -- raise instead of returning
+        mock_groq.set_finish_reason(str)   -- e.g. "length" for a truncated reply
+        mock_groq.calls                    -- recorded create() kwargs
     """
     from app import config as config_mod
     from app import llm_analyzer
 
-    state = {"content": json.dumps(LLM_JSON_RESPONSE), "error": None, "tokens": 123}
+    state = {
+        "content": json.dumps(LLM_JSON_RESPONSE),
+        "error": None,
+        "tokens": 123,
+        "finish_reason": "stop",
+    }
     calls = []
 
     def create(**kwargs):
         calls.append(kwargs)
         if state["error"] is not None:
             raise state["error"]
-        return _fake_groq_response(state["content"], state["tokens"])
+        return _fake_groq_response(
+            state["content"], state["tokens"], state["finish_reason"]
+        )
 
     client = SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))
@@ -149,6 +168,7 @@ def mock_groq(monkeypatch):
         set_content=lambda c: state.__setitem__("content", c),
         set_error=lambda e: state.__setitem__("error", e),
         set_tokens=lambda t: state.__setitem__("tokens", t),
+        set_finish_reason=lambda r: state.__setitem__("finish_reason", r),
     )
     return control
 
