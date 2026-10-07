@@ -141,3 +141,83 @@ def test_result_has_tables_list(update_case):
 
 def test_result_has_problems_list(update_case):
     assert isinstance(update_case["problems"], list)
+
+
+# --------------------------------------------------------------------------
+# Similarity threshold / low-confidence flagging
+#
+# A vector search returns its n nearest neighbours however distant, so an
+# unrelated query still comes back with a full set of results. search_similar
+# flags rather than drops them: callers decide whether to show a weak match,
+# and the eval harness needs the raw distribution to calibrate against.
+# The threshold itself is calibrated in evals/eval_retrieval.py.
+# --------------------------------------------------------------------------
+
+IRRELEVANT_QUERY = "slow scan"
+
+
+def test_every_result_carries_a_low_confidence_flag(seeded_collection):
+    results = search_similar("SELECT * FROM orders;", ["SELECT_STAR"], n_results=3)
+    assert all("low_confidence" in r for r in results)
+
+
+def test_a_close_match_is_not_flagged_low_confidence(seeded_collection):
+    """The seed query itself must clear the threshold comfortably."""
+    results = search_similar(
+        "SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;",
+        ["FUNCTION_ON_COLUMN", "SELECT_STAR"],
+        n_results=1,
+    )
+    assert results[0]["low_confidence"] is False
+
+
+def test_an_irrelevant_query_is_flagged_low_confidence(seeded_collection):
+    """The original bug: 'slow scan' returned unrelated cases as matches."""
+    results = search_similar(IRRELEVANT_QUERY, n_results=3)
+    assert all(r["low_confidence"] for r in results)
+
+
+def test_an_irrelevant_query_still_returns_the_neighbours(seeded_collection):
+    """Flagged, not dropped -- the caller chooses what to do with them."""
+    assert len(search_similar(IRRELEVANT_QUERY, n_results=3)) == 3
+
+
+def test_min_similarity_zero_flags_nothing(seeded_collection):
+    """How the eval harness reads the raw distribution."""
+    results = search_similar(IRRELEVANT_QUERY, n_results=3, min_similarity=0.0)
+    assert not any(r["low_confidence"] for r in results)
+
+
+def test_min_similarity_one_flags_everything(seeded_collection):
+    results = search_similar(
+        "SELECT * FROM orders;", ["SELECT_STAR"], n_results=3, min_similarity=1.0
+    )
+    assert all(r["low_confidence"] for r in results)
+
+
+def test_min_similarity_argument_overrides_the_configured_default(seeded_collection):
+    """An explicit threshold must win over config.RAG_MIN_SIMILARITY."""
+    strict = search_similar(IRRELEVANT_QUERY, n_results=1, min_similarity=0.99)
+    loose = search_similar(IRRELEVANT_QUERY, n_results=1, min_similarity=0.01)
+    assert strict[0]["low_confidence"] and not loose[0]["low_confidence"]
+
+
+def test_the_flag_follows_the_configured_threshold(seeded_collection, monkeypatch):
+    from app import config as config_mod
+
+    query = "SELECT * FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;"
+    problems = ["FUNCTION_ON_COLUMN", "SELECT_STAR"]
+
+    monkeypatch.setattr(config_mod.config, "RAG_MIN_SIMILARITY", 0.99)
+    assert search_similar(query, problems, n_results=1)[0]["low_confidence"] is True
+
+
+def test_the_flag_is_consistent_with_the_reported_similarity(seeded_collection):
+    """Guards against the flag and the score drifting apart."""
+    from app.config import config
+
+    results = search_similar("SELECT * FROM orders;", ["SELECT_STAR"], n_results=5)
+    assert all(
+        r["low_confidence"] == (r["similarity"] < config.RAG_MIN_SIMILARITY)
+        for r in results
+    )

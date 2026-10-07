@@ -205,8 +205,15 @@ def test_search_reports_case_count(search_result):
     assert search_result["case_count"] == len(search_result["cases"])
 
 
-def test_search_defaults_to_three_cases(search_result):
-    assert search_result["case_count"] == 3
+def test_search_defaults_to_considering_three_cases(search_result):
+    """
+    top_k bounds what is retrieved, not what is returned: the threshold may
+    reject some of it. Before the threshold existed this asserted exactly 3
+    returned cases, which is the behaviour that made irrelevant results look
+    like matches.
+    """
+    total = search_result["case_count"] + len(search_result["weak_matches"])
+    assert total == 3
 
 
 def test_search_cases_carry_a_case_id(search_result):
@@ -227,7 +234,8 @@ def test_search_orders_by_similarity_descending(search_result):
 
 
 def test_search_result_is_json_serializable(search_result):
-    assert json.loads(json.dumps(search_result))["case_count"] == 3
+    round_tripped = json.loads(json.dumps(search_result))
+    assert round_tripped["case_count"] == search_result["case_count"]
 
 
 def test_search_honours_top_k(env):
@@ -235,8 +243,112 @@ def test_search_honours_top_k(env):
 
 
 def test_search_accepts_a_natural_language_query(env):
+    """
+    Natural language must be accepted and searched without error. A vague
+    description legitimately clears the threshold for nothing -- which is the
+    point of the threshold -- so this asserts the shape of the response, not
+    that a match was found.
+    """
     result = mcp_server.search_similar_cases("query is slow because of a full table scan")
+    assert result["case_count"] + len(result["weak_matches"]) == 3
+
+
+# --------------------------------------------------------------------------
+# search_similar_cases -- weak results are separated, not presented as matches
+#
+# The original bug: "slow scan" returned three unrelated cases at ~0.43
+# similarity, shaped exactly like genuine matches.
+# --------------------------------------------------------------------------
+
+IRRELEVANT_QUERY = "slow scan"
+
+
+@pytest.fixture
+def irrelevant_result(env):
+    return mcp_server.search_similar_cases(IRRELEVANT_QUERY)
+
+
+def test_an_irrelevant_query_returns_no_matches(irrelevant_result):
+    assert irrelevant_result["cases"] == []
+
+
+def test_an_irrelevant_query_reports_a_zero_case_count(irrelevant_result):
+    assert irrelevant_result["case_count"] == 0
+
+
+def test_an_irrelevant_query_still_surfaces_the_weak_results(irrelevant_result):
+    """Separated and labelled, not silently dropped."""
+    assert len(irrelevant_result["weak_matches"]) == 3
+
+
+def test_weak_matches_are_all_flagged_low_confidence(irrelevant_result):
+    assert all(c["low_confidence"] for c in irrelevant_result["weak_matches"])
+
+
+def test_the_applied_threshold_is_reported(irrelevant_result):
+    """The model should be able to see the bar that was applied."""
+    from app.config import config
+
+    assert irrelevant_result["min_similarity"] == config.RAG_MIN_SIMILARITY
+
+
+def test_a_relevant_query_returns_real_matches(env):
+    result = mcp_server.search_similar_cases(MESSY_QUERY)
     assert result["case_count"] > 0
+
+
+def test_a_relevant_query_has_no_weak_matches_in_cases(env):
+    result = mcp_server.search_similar_cases(MESSY_QUERY)
+    assert not any(c["low_confidence"] for c in result["cases"])
+
+
+def test_matches_are_all_at_or_above_the_threshold(env):
+    from app.config import config
+
+    result = mcp_server.search_similar_cases(MESSY_QUERY)
+    assert all(c["similarity"] >= config.RAG_MIN_SIMILARITY for c in result["cases"])
+
+
+def test_the_expected_seed_case_is_retrieved(env):
+    """The query is a variant of the sarg-extract-date seed case."""
+    result = mcp_server.search_similar_cases(MESSY_QUERY)
+    assert any(c["case_id"] == "sarg-extract-date" for c in result["cases"])
+
+
+def test_matches_and_weak_matches_partition_the_retrieved_set(env):
+    """Nothing retrieved may be lost between the two lists."""
+    result = mcp_server.search_similar_cases(MESSY_QUERY, top_k=5)
+    assert result["case_count"] + len(result["weak_matches"]) == 5
+
+
+def test_the_search_passes_lint_problems_into_the_query(env, monkeypatch):
+    """
+    Feeding the rule names in is what lifts hit rate@3 from 85% to 100% on the
+    retrieval eval, so it is behaviour worth pinning rather than an incidental
+    detail of the implementation.
+    """
+    seen = {}
+
+    def spy(query, problems=None, n_results=None, min_similarity=None):
+        seen["problems"] = problems
+        return []
+
+    monkeypatch.setattr(mcp_server, "search_similar", spy)
+    mcp_server.search_similar_cases("SELECT * FROM orders;")
+    assert seen["problems"] == ["SELECT_STAR"]
+
+
+def test_non_sql_input_searches_without_problems(env, monkeypatch):
+    """Natural language yields no rule names and must still search cleanly."""
+    seen = {}
+
+    def spy(query, problems=None, n_results=None, min_similarity=None):
+        seen["problems"] = problems
+        return []
+
+    monkeypatch.setattr(mcp_server, "search_similar", spy)
+    mcp_server.search_similar_cases("why is my database slow")
+    assert seen["problems"] == []
 
 
 def test_search_failure_becomes_a_recoverable_tool_error(env, monkeypatch):

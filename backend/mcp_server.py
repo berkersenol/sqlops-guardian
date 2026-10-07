@@ -209,22 +209,41 @@ def search_similar_cases(query: str, top_k: int = 3) -> dict:
 
     The query is embedded as text and is never executed against any database.
 
+    A vector search always returns its nearest neighbours however far away they
+    are, so weak results are separated out rather than presented as matches:
+    `cases` holds those at or above the similarity threshold, and
+    `weak_matches` holds the rest. Treat a weak match as a hint at best, and do
+    not describe it to the user as a precedent. An empty `cases` list means the
+    knowledge base holds nothing close, which is a useful answer in itself.
+
     Args:
         query: A SQL statement, or a natural-language description of the
             problem to look for.
-        top_k: How many cases to return, from 1 to 10. Defaults to 3.
+        top_k: How many cases to consider, from 1 to 10. Defaults to 3. This is
+            the number retrieved before the similarity threshold is applied, so
+            fewer may be returned as matches.
 
     Returns:
-        cases: Matches ordered most similar first, each with case_id, the
+        cases: Genuine matches, most similar first, each with case_id, the
             original query, the fix that was applied, tables, problems, and a
             similarity score between 0 and 1 where higher is more similar.
-        case_count: Number of cases returned.
+        case_count: Number of genuine matches.
+        weak_matches: Results below the threshold, same shape. Not precedents.
+        min_similarity: The threshold applied.
     """
     sql = _require_query(query)
     n = _require_top_k(top_k)
     try:
         _ensure_stores_ready()
-        cases = search_similar(sql, n_results=n)
+        # Lint first and feed the rule names into the search text. The linter
+        # is local, free and deterministic, and the cases are indexed by the
+        # problems they exhibit, so this aligns the query with the indexed
+        # text: on the retrieval eval it lifts hit rate@3 from 85% to 100% and
+        # raises the worst correct score from 0.329 to 0.538, which is what
+        # makes a usable threshold possible at all. Non-SQL input simply
+        # yields no rule names and searches as plain text.
+        problems = [f.rule_name for f in _lint_sql(sql)]
+        cases = search_similar(sql, problems=problems, n_results=n)
     except Exception as e:
         logger.warning("search_similar_cases failed: %s", e)
         raise ToolError(
@@ -234,8 +253,18 @@ def search_similar_cases(query: str, top_k: int = 3) -> dict:
             "store and still works, so use it to review the query instead."
         ) from e
 
-    logger.info("search_similar_cases: %d case(s)", len(cases))
-    return {"cases": cases, "case_count": len(cases)}
+    matches = [c for c in cases if not c["low_confidence"]]
+    weak = [c for c in cases if c["low_confidence"]]
+
+    logger.info(
+        "search_similar_cases: %d match(es), %d weak", len(matches), len(weak)
+    )
+    return {
+        "cases": matches,
+        "case_count": len(matches),
+        "weak_matches": weak,
+        "min_similarity": config.RAG_MIN_SIMILARITY,
+    }
 
 
 @mcp.tool(
@@ -327,9 +356,10 @@ def analyze_sql(query: str) -> dict:
             )
     if not report.similar_cases:
         degraded.append(
-            "similar_cases: no precedents were returned, so the knowledge base "
-            "holds nothing close to this query. The lint findings and any LLM "
-            "analysis are unaffected."
+            "similar_cases: no case cleared the similarity threshold, so the "
+            "knowledge base holds no real precedent for this query. This is a "
+            "genuine answer, not a failure -- do not substitute a weak match. "
+            "The lint findings and any LLM analysis are unaffected."
         )
 
     result["degraded"] = degraded

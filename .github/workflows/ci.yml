@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend tests and linter eval
+    name: Backend tests, linter eval and retrieval eval
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -78,7 +78,35 @@ jobs:
           set -o pipefail
           uv run python -m evals.eval_linter             --golden evals/golden_linter_holdout.json | tee eval_holdout_output.txt
 
-      - name: Add linter eval to job summary
+      # The retrieval eval queries the real ChromaDB store, which a fresh
+      # checkout does not have. pytest seeds only throwaway tmp directories, so
+      # seed the configured store explicitly before evaluating against it.
+      - name: Seed ChromaDB for the retrieval eval
+        if: always() && steps.eval.outcome != 'skipped'
+        run: uv run python -m app.seed_cases
+
+      # Gate: retrieval must keep finding the right seed case. 1.0 is the
+      # measured hit rate@3, and the similarity threshold in config is
+      # calibrated to sit just under the worst correct score, so a regression
+      # here means either retrieval quality or that calibration has drifted.
+      - name: Run retrieval eval (gated at hit rate@3 1.0)
+        id: eval_retrieval
+        if: always() && steps.eval.outcome != 'skipped'
+        run: |
+          set -o pipefail
+          uv run python -m evals.eval_retrieval --min-hit-rate 1.0 | tee eval_retrieval_output.txt
+
+      # Report only: the same eval without the lint rule names in the search
+      # text. This is the weaker shape the MCP tool used before calibration;
+      # keeping it visible shows what that change is worth over time.
+      - name: Run retrieval eval -- query only (report only)
+        id: eval_retrieval_query_only
+        if: always() && steps.eval.outcome != 'skipped'
+        run: |
+          set -o pipefail
+          uv run python -m evals.eval_retrieval --query-only | tee eval_retrieval_query_only_output.txt
+
+      - name: Add eval results to job summary
         if: always() && steps.eval.outcome != 'skipped'
         run: |
           {
@@ -90,14 +118,24 @@ jobs:
             echo '```'
             cat eval_holdout_output.txt || echo 'held-out eval produced no output'
             echo '```'
+            echo '## Retrieval eval (gated, hit rate@3 = 1.0)'
+            echo '```'
+            cat eval_retrieval_output.txt || echo 'retrieval eval produced no output'
+            echo '```'
+            echo '## Retrieval eval -- query only, no lint rule names (report only)'
+            echo '```'
+            cat eval_retrieval_query_only_output.txt || echo 'query-only eval produced no output'
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload eval result JSON
         if: always() && steps.eval.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
-          name: linter-eval-result
+          name: eval-results
           path: |
             backend/evals/results/linter_latest.json
             backend/evals/results/linter_latest_holdout.json
+            backend/evals/results/retrieval_latest.json
+            backend/evals/results/retrieval_latest_query_only.json
           if-no-files-found: warn
