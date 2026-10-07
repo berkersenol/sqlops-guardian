@@ -1,11 +1,11 @@
 """
 SQLOps Guardian - MCP server (stdio transport).
 
-Exposes the three analysis layers as MCP tools so any MCP host (Claude
-Desktop, Cursor, Claude Code) can call them. This module is an *adapter*
-only: every tool delegates to the same functions the REST API and CLI use
-(app.linter, app.rag, app.pipeline) and adds nothing but argument validation
-and JSON shaping.
+Exposes the three analysis layers, plus rewrite verification, as MCP tools so
+any MCP host (Claude Desktop, Cursor, Claude Code) can call them. This module
+is an *adapter* only: every tool delegates to the same functions the REST API
+and CLI use (app.linter, app.rag, app.pipeline, app.verifier) and adds nothing
+but argument validation and JSON shaping.
 
 Two constraints shape the code below.
 
@@ -18,10 +18,19 @@ Two constraints shape the code below.
    that is correct under any transport and stderr is what the host captures
    into its MCP log. Nothing in this file prints.
 
-2. SQL is data, never code.
-   No tool executes, prepares, or connects to a database with the query it is
-   given. It is parsed by sqlglot and embedded as text, nothing more. A
-   hostile string in `query` is inert here.
+2. SQL is data, never code -- with one deliberate, contained exception.
+   lint_sql, search_similar_cases and analyze_sql never execute, prepare, or
+   connect to a database with the query they are given. It is parsed by
+   sqlglot and embedded as text, nothing more, so a hostile string in `query`
+   is inert.
+
+   verify_rewrite is the exception, and it has to be: you cannot check that
+   two queries return the same rows without running them. It therefore does
+   not rely on that invariant but rebuilds the guarantee by containment --
+   a single-SELECT-only parser check, a read-only (mode=ro) connection, a row
+   limit, a timeout, and a disposable fixture database that holds nothing of
+   value and can be rebuilt at any time. See app/verifier.py, whose module
+   docstring sets out the threat model; the controls are not duplicated here.
 """
 
 import logging
@@ -44,6 +53,7 @@ from app.config import config  # noqa: E402
 from app.linter import get_overall_severity, lint_sql as _lint_sql  # noqa: E402
 from app.rag import search_similar  # noqa: E402
 from app.serialization import finding_to_dict, report_to_dict  # noqa: E402
+from app.verifier import verify_rewrite as _verify_rewrite  # noqa: E402
 
 logger = logging.getLogger("sqlops_guardian.mcp")
 
@@ -56,8 +66,12 @@ mcp = MCPServer(
         "SQL review tools for SQLOps Guardian. Prefer lint_sql for a quick "
         "anti-pattern check: it is local, deterministic and free. Use "
         "analyze_sql only when the user wants index suggestions or a rewrite, "
-        "since it calls an external LLM. None of these tools execute the SQL "
-        "they are given."
+        "since it calls an external LLM. Use verify_rewrite to check that a "
+        "rewrite actually returns the same rows as the original -- analyze_sql "
+        "does not check that itself. lint_sql, search_similar_cases and "
+        "analyze_sql never execute the SQL they are given; verify_rewrite "
+        "does, read-only and against a small disposable test database, never "
+        "against any real one."
     ),
 )
 
@@ -377,6 +391,95 @@ def analyze_sql(query: str) -> dict:
         {layer["name"]: layer["status"] for layer in result["layers"]},
     )
     return result
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Verify a rewrite returns the same rows (executes SQL, read-only)",
+        # Executes SQL, but only SELECTs, only against the disposable fixture
+        # database, and over a connection opened read-only. Nothing is written
+        # anywhere -- not even the analysis log that makes analyze_sql
+        # non-read-only -- so read_only_hint is accurate.
+        read_only_hint=True,
+        # The deterministic comparison is reproducible; the LLM probing step
+        # that runs only when results match is not guaranteed to be.
+        idempotent_hint=False,
+        # Reaches Groq, but only for pairs whose results matched.
+        open_world_hint=True,
+    )
+)
+def verify_rewrite(original: str, rewrite: str) -> dict:
+    """Check whether a rewritten SQL query actually returns the same rows as the original.
+
+    Use this on any rewrite before acting on it, including the
+    `rewritten_query` that analyze_sql returns. analyze_sql does not verify its
+    own rewrites: it asks an LLM for one and hands it back unchecked. This tool
+    is the check. A rewrite that silently changes results is worse than no
+    rewrite, because it looks authoritative -- this project shipped exactly
+    that bug once, a "fix" using UNION ALL where the original required UNION.
+
+    How it works: both queries are executed against a small purpose-built
+    SQLite test database and their results compared as multisets, so duplicate
+    rows are counted rather than collapsed. That comparison runs first and
+    needs no LLM; a mismatch is a proof of non-equivalence and is returned
+    immediately. Only when the results match does an agent loop probe the data
+    to judge whether the test database actually exercises whatever could have
+    made them differ.
+
+    This tool DOES execute SQL, unlike the others on this server. It is
+    contained: only a single read-only SELECT is accepted, the connection is
+    opened read-only, rows and runtime are capped, and the test database is
+    disposable and holds no real data. Your own database is never touched, so
+    the verdict is about the queries' semantics on representative test data,
+    not about your production rows.
+
+    Args:
+        original: The original SQL query, as a single SELECT.
+        rewrite: The proposed replacement, as a single SELECT.
+
+    Returns:
+        verdict: One of three values, and the distinction matters.
+            "not_equivalent" -- proven: the two queries returned different
+                results. Do not use the rewrite.
+            "equivalent_on_test_data" -- the results matched and no
+                distinguishing case was found. This is evidence, not proof:
+                it holds for the test data, and a rewrite that diverges only
+                on data shapes absent from that fixture still earns it. Read
+                `evidence` before relying on it.
+            "undetermined" -- no conclusion was reached, because a query was
+                rejected, the step limit was hit, or something failed. This is
+                NOT a pass; report it as unverified rather than as equivalent.
+        evidence: Plain-English justification citing the observed row counts
+            and differences. Worth passing on to the user verbatim.
+        steps_taken: How many steps the agent used. A verdict reached in 1 step
+            was settled deterministically; one scraped out of the last allowed
+            step deserves more scepticism.
+        decided_without_llm: True when the deterministic comparison alone
+            settled it and no LLM was involved. Those verdicts are the
+            strongest ones here.
+        tool_calls: The audit trail -- every tool call made and what it
+            returned, in order. This is the agent's actual reasoning, so cite
+            it rather than paraphrasing when explaining a verdict.
+    """
+    original_sql = _require_query(original)
+    rewrite_sql = _require_query(rewrite)
+
+    try:
+        result = _verify_rewrite(original_sql, rewrite_sql)
+    except Exception as e:
+        logger.exception("verify_rewrite failed")
+        raise ToolError(
+            f"Rewrite verification failed: {e}. This tool needs to build and "
+            "read a local SQLite fixture, which usually means its data "
+            "directory is not writable. lint_sql still reviews the rewrite's "
+            "shape without executing it."
+        ) from e
+
+    logger.info(
+        "verify_rewrite: verdict=%s steps=%d without_llm=%s",
+        result.verdict.value, result.steps_taken, result.decided_without_llm,
+    )
+    return result.model_dump(mode="json")
 
 
 def main() -> None:

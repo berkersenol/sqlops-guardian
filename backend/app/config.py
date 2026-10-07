@@ -40,6 +40,28 @@ class Config:
     # SQLite
     SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "./data/sqlops_guardian.db")
 
+    # Rewrite verification (app.verifier)
+    #
+    # The fixture database the verifier executes candidate rewrites against.
+    # Deliberately NOT the analysis log above: the verifier is the only
+    # component in this project that executes the SQL it is given, so it gets
+    # its own disposable database that app.verify_fixture can rebuild from
+    # scratch. It is opened read-only (mode=ro) regardless.
+    VERIFY_DB_PATH: str = os.getenv("VERIFY_DB_PATH", "./data/verify_fixture.db")
+    # Hard cap on agent loop iterations. Each iteration is one Groq round trip
+    # that resends the whole message history, so cost grows faster than
+    # linearly; and the characteristic failure of a tool-calling loop is
+    # repetition, not a wrong answer. Hitting this cap yields "undetermined"
+    # rather than a guess.
+    VERIFY_MAX_STEPS: int = int(os.getenv("VERIFY_MAX_STEPS", "6"))
+    # Rows returned per query. Bounds both memory and how much of a result set
+    # can be pushed into the LLM's context by a careless cross join.
+    VERIFY_ROW_LIMIT: int = int(os.getenv("VERIFY_ROW_LIMIT", "200"))
+    # Wall-clock budget per query, enforced via a SQLite progress handler
+    # (signal.alarm is POSIX-only and this project runs on Windows too). A
+    # stalled query would otherwise block the whole stdio MCP process.
+    VERIFY_TIMEOUT_MS: int = int(os.getenv("VERIFY_TIMEOUT_MS", "2000"))
+
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     DEBUG: bool = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
