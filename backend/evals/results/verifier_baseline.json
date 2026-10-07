@@ -1,0 +1,287 @@
+{
+  "timestamp": "2026-10-07T14:08:51",
+  "golden_set": "golden_verifier.json",
+  "llm_enabled": true,
+  "model": "openai/gpt-oss-120b",
+  "max_steps": 6,
+  "n_pairs": 6,
+  "n_correct": 6,
+  "accuracy": 1.0,
+  "decided_without_llm": 3,
+  "probe_failures": 0,
+  "per_category": {
+    "correct": {
+      "total": 3,
+      "correct": 3,
+      "accuracy": 1.0
+    },
+    "subtly_wrong": {
+      "total": 3,
+      "correct": 3,
+      "accuracy": 1.0
+    }
+  },
+  "pairs": [
+    {
+      "id": "ok-or-to-in",
+      "category": "correct",
+      "expected": "equivalent_on_test_data",
+      "actual": "equivalent_on_test_data",
+      "correct": true,
+      "steps_taken": 4,
+      "decided_without_llm": false,
+      "probe_status": "ok",
+      "probe_error": "",
+      "evidence": "The orders table contains 1 row with status NULL; both queries exclude it and return the same 6 rows, so the NULL handling difference is exercised here.",
+      "tool_calls": [
+        {
+          "step": 0,
+          "tool": "compare_results",
+          "args": {
+            "sql_a": "SELECT id, status FROM orders WHERE status = 'shipped' OR status = 'pending'",
+            "sql_b": "SELECT id, status FROM orders WHERE status IN ('shipped', 'pending')"
+          },
+          "result": "{\"comparable\": true, \"match\": true, \"original\": {\"row_count\": 6, \"columns\": [\"id\", \"status\"]}, \"rewrite\": {\"row_count\": 6, \"columns\": [\"id\", \"status\"]}, \"diff\": \"\"}",
+          "ok": true
+        },
+        {
+          "step": 2,
+          "tool": "get_schema",
+          "args": {},
+          "result": "{\"tables\": [{\"table\": \"order_items\", \"row_count\": 6, \"columns\": [{\"name\": \"order_id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"product_id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"quantity\", \"type\": \"INTEGER\", \"nullable\": false}]}, {\"table\": \"orders\", \"row_count\": 8, \"columns\": [{\"name\": \"id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"user_id\", \"type\": \"INTEGER\", \"nullable\": true}, {\"name\": \"status\", \"type\": \"TEXT\", \"nullable\": true}, {\"name\": \"total\", \"type\": \"REAL\", \"nullable\": true}, {\"name\": \"created_at\", \"type\": \"TEXT\", \"nullable\": true}]}, {\"table\": \"products\", \"r",
+          "ok": true
+        },
+        {
+          "step": 3,
+          "tool": "run_query",
+          "args": {
+            "sql": "SELECT COUNT(*) AS null_cnt FROM orders WHERE status IS NULL"
+          },
+          "result": "{\"columns\": [\"null_cnt\"], \"rows\": [[1]], \"row_count\": 1, \"truncated\": false}",
+          "ok": true
+        },
+        {
+          "step": 4,
+          "tool": "submit_verdict",
+          "args": {
+            "evidence": "The orders table contains 1 row with status NULL; both queries exclude it and return the same 6 rows, so the NULL handling difference is exercised here.",
+            "verdict": "equivalent_on_test_data"
+          },
+          "result": "{\"evidence\": \"The orders table contains 1 row with status NULL; both queries exclude it and return the same 6 rows, so the NULL handling difference is exercised here.\", \"verdict\": \"equivalent_on_test_data\"}",
+          "ok": true
+        }
+      ],
+      "why": "Two equality tests on the same column collapse into an IN list with no change in meaning. Both forms exclude the NULL-status row, since neither NULL = 'shipped' nor NULL IN (...) is ever true.",
+      "exposed_by": "orders o6 has a NULL status, so the fixture does exercise the NULL path rather than agreeing by accident."
+    },
+    {
+      "id": "ok-sargable-date-range",
+      "category": "correct",
+      "expected": "equivalent_on_test_data",
+      "actual": "equivalent_on_test_data",
+      "correct": true,
+      "steps_taken": 6,
+      "decided_without_llm": false,
+      "probe_status": "ok",
+      "probe_error": "",
+      "evidence": "orders.created_at has 1 NULL row and 5 rows with year 2025; both queries return those 5 rows, so the NULL case and year boundaries are exercised here",
+      "tool_calls": [
+        {
+          "step": 0,
+          "tool": "compare_results",
+          "args": {
+            "sql_a": "SELECT id FROM orders WHERE strftime('%Y', created_at) = '2025'",
+            "sql_b": "SELECT id FROM orders WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'"
+          },
+          "result": "{\"comparable\": true, \"match\": true, \"original\": {\"row_count\": 5, \"columns\": [\"id\"]}, \"rewrite\": {\"row_count\": 5, \"columns\": [\"id\"]}, \"diff\": \"\"}",
+          "ok": true
+        },
+        {
+          "step": 2,
+          "tool": "get_schema",
+          "args": {},
+          "result": "{\"tables\": [{\"table\": \"order_items\", \"row_count\": 6, \"columns\": [{\"name\": \"order_id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"product_id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"quantity\", \"type\": \"INTEGER\", \"nullable\": false}]}, {\"table\": \"orders\", \"row_count\": 8, \"columns\": [{\"name\": \"id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"user_id\", \"type\": \"INTEGER\", \"nullable\": true}, {\"name\": \"status\", \"type\": \"TEXT\", \"nullable\": true}, {\"name\": \"total\", \"type\": \"REAL\", \"nullable\": true}, {\"name\": \"created_at\", \"type\": \"TEXT\", \"nullable\": true}]}, {\"table\": \"products\", \"r",
+          "ok": true
+        },
+        {
+          "step": 3,
+          "tool": "run_query",
+          "args": {
+            "sql": "SELECT COUNT(*) AS cnt FROM orders WHERE strftime('%Y', created_at) = '2025'"
+          },
+          "result": "{\"columns\": [\"cnt\"], \"rows\": [[5]], \"row_count\": 1, \"truncated\": false}",
+          "ok": true
+        },
+        {
+          "step": 4,
+          "tool": "run_query",
+          "args": {
+            "sql": "SELECT created_at FROM orders WHERE created_at IS NOT NULL"
+          },
+          "result": "{\"columns\": [\"created_at\"], \"rows\": [[\"2025-03-14\"], [\"2025-07-02\"], [\"2024-11-20\"], [\"2026-01-05\"], [\"2025-01-01\"], [\"2025-12-31\"], [\"2025-06-06\"]], \"row_count\": 7, \"truncated\": false}",
+          "ok": true
+        },
+        {
+          "step": 5,
+          "tool": "run_query",
+          "args": {
+            "sql": "SELECT COUNT(*) AS cnt FROM orders WHERE created_at IS NULL"
+          },
+          "result": "{\"columns\": [\"cnt\"], \"rows\": [[1]], \"row_count\": 1, \"truncated\": false}",
+          "ok": true
+        },
+        {
+          "step": 6,
+          "tool": "submit_verdict",
+          "args": {
+            "evidence": "orders.created_at has 1 NULL row and 5 rows with year 2025; both queries return those 5 rows, so the NULL case and year boundaries are exercised here",
+            "verdict": "equivalent_on_test_data"
+          },
+          "result": "{\"evidence\": \"orders.created_at has 1 NULL row and 5 rows with year 2025; both queries return those 5 rows, so the NULL case and year boundaries are exercised here\", \"verdict\": \"equivalent_on_test_data\"}",
+          "ok": true
+        }
+      ],
+      "why": "The classic sargability fix: drop the function wrapping the column so an index can be used. Equivalent for ISO-8601 text dates, and the half-open upper bound is what keeps it so.",
+      "exposed_by": "created_at covers both 2025 boundaries (o5 2025-01-01, o6 2025-12-31), a 2026 date just past the bound (o4 2026-01-05), a 2024 date (o3) and a NULL (o7). An inclusive <= '2026-01-01' or an off-by-one at either boundary would be caught."
+    },
+    {
+      "id": "ok-or-across-columns-union",
+      "category": "correct",
+      "expected": "equivalent_on_test_data",
+      "actual": "equivalent_on_test_data",
+      "correct": true,
+      "steps_taken": 5,
+      "decided_without_llm": false,
+      "probe_status": "ok",
+      "probe_error": "",
+      "evidence": "orders table has 8 rows and 8 distinct id values, so there are no duplicate ids that could be removed by UNION; thus the test data does not exercise the duplicate\u2011row difference.",
+      "tool_calls": [
+        {
+          "step": 0,
+          "tool": "compare_results",
+          "args": {
+            "sql_a": "SELECT id FROM orders WHERE status = 'shipped' OR total > 500",
+            "sql_b": "SELECT id FROM orders WHERE status = 'shipped' UNION SELECT id FROM orders WHERE total > 500"
+          },
+          "result": "{\"comparable\": true, \"match\": true, \"original\": {\"row_count\": 6, \"columns\": [\"id\"]}, \"rewrite\": {\"row_count\": 6, \"columns\": [\"id\"]}, \"diff\": \"\"}",
+          "ok": true
+        },
+        {
+          "step": 2,
+          "tool": "get_schema",
+          "args": {},
+          "result": "{\"tables\": [{\"table\": \"order_items\", \"row_count\": 6, \"columns\": [{\"name\": \"order_id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"product_id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"quantity\", \"type\": \"INTEGER\", \"nullable\": false}]}, {\"table\": \"orders\", \"row_count\": 8, \"columns\": [{\"name\": \"id\", \"type\": \"INTEGER\", \"nullable\": false}, {\"name\": \"user_id\", \"type\": \"INTEGER\", \"nullable\": true}, {\"name\": \"status\", \"type\": \"TEXT\", \"nullable\": true}, {\"name\": \"total\", \"type\": \"REAL\", \"nullable\": true}, {\"name\": \"created_at\", \"type\": \"TEXT\", \"nullable\": true}]}, {\"table\": \"products\", \"r",
+          "ok": true
+        },
+        {
+          "step": 3,
+          "tool": "run_query",
+          "args": {
+            "sql": "SELECT COUNT(*) AS total, COUNT(DISTINCT id) AS distinct_ids FROM orders;"
+          },
+          "result": "{\"columns\": [\"total\", \"distinct_ids\"], \"rows\": [[8, 8]], \"row_count\": 1, \"truncated\": false}",
+          "ok": true
+        },
+        {
+          "step": 4,
+          "tool": "run_query",
+          "args": {
+            "sql": "SELECT COUNT(*) AS both FROM orders WHERE status = 'shipped' AND total > 500;"
+          },
+          "result": "{\"columns\": [\"both\"], \"rows\": [[2]], \"row_count\": 1, \"truncated\": false}",
+          "ok": true
+        },
+        {
+          "step": 5,
+          "tool": "submit_verdict",
+          "args": {
+            "evidence": "orders table has 8 rows and 8 distinct id values, so there are no duplicate ids that could be removed by UNION; thus the test data does not exercise the duplicate\u2011row difference.",
+            "verdict": "equivalent_on_test_data"
+          },
+          "result": "{\"evidence\": \"orders table has 8 rows and 8 distinct id values, so there are no duplicate ids that could be removed by UNION; thus the test data does not exercise the duplicate\\u2011row difference.\", \"verdict\": \"equivalent_on_test_data\"}",
+          "ok": true
+        }
+      ],
+      "why": "The correct form of the fix this project got wrong once: splitting an OR across two columns into two index-friendly branches. UNION deduplicates, so a row matching both branches is still returned once, as the original returns it.",
+      "exposed_by": "orders o1 and o8 match both branches. This is the same data that makes the UNION ALL pair below fail, so the two together show the verifier discriminates rather than flagging every set operation."
+    },
+    {
+      "id": "bad-union-all-duplicates",
+      "category": "subtly_wrong",
+      "expected": "not_equivalent",
+      "actual": "not_equivalent",
+      "correct": true,
+      "steps_taken": 1,
+      "decided_without_llm": true,
+      "probe_status": "not_needed",
+      "probe_error": "",
+      "evidence": "Proven by execution: the two queries return different results on the test database. Row counts: original 6, rewrite 8. 2 row(s) the rewrite returns and the original does not, e.g. (id=1); (id=8).",
+      "tool_calls": [
+        {
+          "step": 0,
+          "tool": "compare_results",
+          "args": {
+            "sql_a": "SELECT id FROM orders WHERE status = 'shipped' OR total > 500",
+            "sql_b": "SELECT id FROM orders WHERE status = 'shipped' UNION ALL SELECT id FROM orders WHERE total > 500"
+          },
+          "result": "{\"comparable\": true, \"match\": false, \"original\": {\"row_count\": 6, \"columns\": [\"id\"]}, \"rewrite\": {\"row_count\": 8, \"columns\": [\"id\"]}, \"diff\": \"Row counts: original 6, rewrite 8. 2 row(s) the rewrite returns and the original does not, e.g. (id=1); (id=8).\"}",
+          "ok": true
+        }
+      ],
+      "why": "The real bug from commit 71c7907, which sat in the seed knowledge base being served as a precedent. UNION ALL does not deduplicate, so every row satisfying both branches is returned twice.",
+      "exposed_by": "orders o1 and o8 satisfy both branches, so the rewrite returns 8 rows where the original returns 6. With no row matching both branches, UNION and UNION ALL would agree and the bug would be invisible."
+    },
+    {
+      "id": "bad-not-in-vs-not-exists-nulls",
+      "category": "subtly_wrong",
+      "expected": "not_equivalent",
+      "actual": "not_equivalent",
+      "correct": true,
+      "steps_taken": 1,
+      "decided_without_llm": true,
+      "probe_status": "not_needed",
+      "probe_error": "",
+      "evidence": "Proven by execution: the two queries return different results on the test database. Row counts: original 0, rewrite 2. 2 row(s) the rewrite returns and the original does not, e.g. (id=3); (id=4).",
+      "tool_calls": [
+        {
+          "step": 0,
+          "tool": "compare_results",
+          "args": {
+            "sql_a": "SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM orders)",
+            "sql_b": "SELECT u.id FROM users u WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)"
+          },
+          "result": "{\"comparable\": true, \"match\": false, \"original\": {\"row_count\": 0, \"columns\": [\"id\"]}, \"rewrite\": {\"row_count\": 2, \"columns\": [\"id\"]}, \"diff\": \"Row counts: original 0, rewrite 2. 2 row(s) the rewrite returns and the original does not, e.g. (id=3); (id=4).\"}",
+          "ok": true
+        }
+      ],
+      "why": "The textbook NOT IN to NOT EXISTS rewrite, and the linter's own NOT_IN_SUBQUERY rule recommends it. It is a correctness change whenever the subquery column is nullable: a single NULL makes `id NOT IN (...)` evaluate to NULL instead of TRUE for every candidate row, so the original returns nothing at all. The standard advice is right about performance and silent about this.",
+      "exposed_by": "orders o5 has a NULL user_id, which makes the original return 0 rows, and users 3 and 4 have no orders, which gives the rewrite 2 rows to return. Both halves are needed: without the NULL the two agree, and without the order-less users there is nothing to differ about."
+    },
+    {
+      "id": "bad-exists-to-join-fanout",
+      "category": "subtly_wrong",
+      "expected": "not_equivalent",
+      "actual": "not_equivalent",
+      "correct": true,
+      "steps_taken": 1,
+      "decided_without_llm": true,
+      "probe_status": "not_needed",
+      "probe_error": "",
+      "evidence": "Proven by execution: the two queries return different results on the test database. Row counts: original 2, rewrite 4. 2 row(s) the rewrite returns and the original does not, e.g. (id=1, name='Ada'); (id=2, name='Brij').",
+      "tool_calls": [
+        {
+          "step": 0,
+          "tool": "compare_results",
+          "args": {
+            "sql_a": "SELECT u.id, u.name FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.status = 'shipped')",
+            "sql_b": "SELECT u.id, u.name FROM users u JOIN orders o ON o.user_id = u.id WHERE o.status = 'shipped'"
+          },
+          "result": "{\"comparable\": true, \"match\": false, \"original\": {\"row_count\": 2, \"columns\": [\"id\", \"name\"]}, \"rewrite\": {\"row_count\": 4, \"columns\": [\"id\", \"name\"]}, \"diff\": \"Row counts: original 2, rewrite 4. 2 row(s) the rewrite returns and the original does not, e.g. (id=1, name='Ada'); (id=2, name='Brij').\"}",
+          "ok": true
+        }
+      ],
+      "why": "Flattening a semi-join into an inner join. EXISTS returns each left row once however many matches it has; a JOIN returns it once per match. This is the case that justifies comparing results as multisets: as sets the two answers are identical, so a set comparison would call this equivalent.",
+      "exposed_by": "users 1 and 2 each have two 'shipped' orders (o1/o2 and o4/o8), so the rewrite returns 4 rows against the original's 2. Give every user at most one shipped order and the duplication disappears."
+    }
+  ]
+}

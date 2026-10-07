@@ -1,0 +1,59 @@
+{
+  "description": "Rewrite pairs for the verification agent. Three rewrites preserve the original's results and three change them subtly. Each wrong pair is wrong in a way that only shows up on specific data, and app/verify_fixture.py is built to contain that data -- the `exposed_by` field names the rows that make the case detectable, so a fixture edit that disarms a case can be traced.",
+  "pairs": [
+    {
+      "id": "ok-or-to-in",
+      "category": "correct",
+      "expected_verdict": "equivalent_on_test_data",
+      "original": "SELECT id, status FROM orders WHERE status = 'shipped' OR status = 'pending'",
+      "rewrite": "SELECT id, status FROM orders WHERE status IN ('shipped', 'pending')",
+      "why": "Two equality tests on the same column collapse into an IN list with no change in meaning. Both forms exclude the NULL-status row, since neither NULL = 'shipped' nor NULL IN (...) is ever true.",
+      "exposed_by": "orders o6 has a NULL status, so the fixture does exercise the NULL path rather than agreeing by accident."
+    },
+    {
+      "id": "ok-sargable-date-range",
+      "category": "correct",
+      "expected_verdict": "equivalent_on_test_data",
+      "original": "SELECT id FROM orders WHERE strftime('%Y', created_at) = '2025'",
+      "rewrite": "SELECT id FROM orders WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'",
+      "why": "The classic sargability fix: drop the function wrapping the column so an index can be used. Equivalent for ISO-8601 text dates, and the half-open upper bound is what keeps it so.",
+      "exposed_by": "created_at covers both 2025 boundaries (o5 2025-01-01, o6 2025-12-31), a 2026 date just past the bound (o4 2026-01-05), a 2024 date (o3) and a NULL (o7). An inclusive <= '2026-01-01' or an off-by-one at either boundary would be caught."
+    },
+    {
+      "id": "ok-or-across-columns-union",
+      "category": "correct",
+      "expected_verdict": "equivalent_on_test_data",
+      "original": "SELECT id FROM orders WHERE status = 'shipped' OR total > 500",
+      "rewrite": "SELECT id FROM orders WHERE status = 'shipped' UNION SELECT id FROM orders WHERE total > 500",
+      "why": "The correct form of the fix this project got wrong once: splitting an OR across two columns into two index-friendly branches. UNION deduplicates, so a row matching both branches is still returned once, as the original returns it.",
+      "exposed_by": "orders o1 and o8 match both branches. This is the same data that makes the UNION ALL pair below fail, so the two together show the verifier discriminates rather than flagging every set operation."
+    },
+    {
+      "id": "bad-union-all-duplicates",
+      "category": "subtly_wrong",
+      "expected_verdict": "not_equivalent",
+      "original": "SELECT id FROM orders WHERE status = 'shipped' OR total > 500",
+      "rewrite": "SELECT id FROM orders WHERE status = 'shipped' UNION ALL SELECT id FROM orders WHERE total > 500",
+      "why": "The real bug from commit 71c7907, which sat in the seed knowledge base being served as a precedent. UNION ALL does not deduplicate, so every row satisfying both branches is returned twice.",
+      "exposed_by": "orders o1 and o8 satisfy both branches, so the rewrite returns 8 rows where the original returns 6. With no row matching both branches, UNION and UNION ALL would agree and the bug would be invisible."
+    },
+    {
+      "id": "bad-not-in-vs-not-exists-nulls",
+      "category": "subtly_wrong",
+      "expected_verdict": "not_equivalent",
+      "original": "SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM orders)",
+      "rewrite": "SELECT u.id FROM users u WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
+      "why": "The textbook NOT IN to NOT EXISTS rewrite, and the linter's own NOT_IN_SUBQUERY rule recommends it. It is a correctness change whenever the subquery column is nullable: a single NULL makes `id NOT IN (...)` evaluate to NULL instead of TRUE for every candidate row, so the original returns nothing at all. The standard advice is right about performance and silent about this.",
+      "exposed_by": "orders o5 has a NULL user_id, which makes the original return 0 rows, and users 3 and 4 have no orders, which gives the rewrite 2 rows to return. Both halves are needed: without the NULL the two agree, and without the order-less users there is nothing to differ about."
+    },
+    {
+      "id": "bad-exists-to-join-fanout",
+      "category": "subtly_wrong",
+      "expected_verdict": "not_equivalent",
+      "original": "SELECT u.id, u.name FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.status = 'shipped')",
+      "rewrite": "SELECT u.id, u.name FROM users u JOIN orders o ON o.user_id = u.id WHERE o.status = 'shipped'",
+      "why": "Flattening a semi-join into an inner join. EXISTS returns each left row once however many matches it has; a JOIN returns it once per match. This is the case that justifies comparing results as multisets: as sets the two answers are identical, so a set comparison would call this equivalent.",
+      "exposed_by": "users 1 and 2 each have two 'shipped' orders (o1/o2 and o4/o8), so the rewrite returns 4 rows against the original's 2. Give every user at most one shipped order and the duplication disappears."
+    }
+  ]
+}

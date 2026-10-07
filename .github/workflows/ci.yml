@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend tests, linter eval and retrieval eval
+    name: Backend tests, linter, retrieval and verifier evals
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -106,6 +106,24 @@ jobs:
           set -o pipefail
           uv run python -m evals.eval_retrieval --query-only | tee eval_retrieval_query_only_output.txt
 
+      # Gate: the verification agent must get all six rewrite verdicts right
+      # using the deterministic oracle alone. --no-llm is not a concession to
+      # CI having no GROQ_API_KEY, it is the stronger assertion: every wrong
+      # rewrite in the golden set should be caught by executing both queries
+      # and comparing results, with no model involved. If this ever needs the
+      # LLM to pass, the fixture has stopped containing the rows that expose a
+      # case, and that is exactly the regression worth blocking a merge on.
+      #
+      # The live run (same command without --no-llm) exercises the Groq
+      # tool-calling loop and has to be run by hand with a key; its result is
+      # committed as evals/results/verifier_baseline.json.
+      - name: Run verifier eval -- deterministic oracle (gated at 100%)
+        id: eval_verifier
+        if: always() && steps.eval.outcome != 'skipped'
+        run: |
+          set -o pipefail
+          uv run python -m evals.eval_verifier --no-llm --min-accuracy 1.0 | tee eval_verifier_output.txt
+
       - name: Add eval results to job summary
         if: always() && steps.eval.outcome != 'skipped'
         run: |
@@ -126,6 +144,10 @@ jobs:
             echo '```'
             cat eval_retrieval_query_only_output.txt || echo 'query-only eval produced no output'
             echo '```'
+            echo '## Verifier eval -- deterministic oracle (gated, accuracy = 1.0)'
+            echo '```'
+            cat eval_verifier_output.txt || echo 'verifier eval produced no output'
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload eval result JSON
@@ -138,4 +160,5 @@ jobs:
             backend/evals/results/linter_latest_holdout.json
             backend/evals/results/retrieval_latest.json
             backend/evals/results/retrieval_latest_query_only.json
+            backend/evals/results/verifier_latest_no_llm.json
           if-no-files-found: warn

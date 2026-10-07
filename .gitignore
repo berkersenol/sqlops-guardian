@@ -50,3 +50,7 @@ backend/evals/results/*
 !backend/evals/results/linter_baseline_regex.json
 !backend/evals/results/linter_sqlglot.json
 !backend/evals/results/linter_holdout.json
+# The verifier's live run needs a GROQ_API_KEY, so CI only ever produces the
+# --no-llm figures. The committed baseline is the record of what the real
+# tool-calling loop did, including the agent's own evidence strings.
+!backend/evals/results/verifier_baseline.json
