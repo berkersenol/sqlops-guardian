@@ -94,7 +94,7 @@
     "case_id": "or-across-columns",
     "query": "SELECT * FROM products WHERE category = 'Electronics' OR brand = 'Apple';",
     "problems": ["OR_ACROSS_COLUMNS", "SELECT_STAR"],
-    "fix": "Split into two queries with UNION ALL for better index usage: SELECT id FROM products WHERE category = 'Electronics' UNION ALL SELECT id FROM products WHERE brand = 'Apple'.",
+    "fix": "Split into two queries combined with UNION, so each branch can use its own index instead of the OR forcing a full scan: SELECT id FROM products WHERE category = 'Electronics' UNION SELECT id FROM products WHERE brand = 'Apple'. Use UNION, not UNION ALL: a product that is both in Electronics and made by Apple matches both branches, so UNION ALL would return it twice while the original OR returns it once. UNION removes those duplicates and preserves the original result set, at the cost of a sort or hash to deduplicate. UNION ALL is only correct here if the branches are provably disjoint.",
     "tables": ["products"]
   },
   {
